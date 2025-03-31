@@ -15,6 +15,7 @@ class SocketService {
     this.connectionPromise = null;
     this.connectionAttempts = 0;
     this.maxConnectionAttempts = 3;
+    this.connectionTimeout = null;
   }
 
   /**
@@ -22,6 +23,12 @@ class SocketService {
    * @returns {Promise} Promise that resolves when connected
    */
   async init() {
+    // Clear any existing timeout
+    if (this.connectionTimeout) {
+      clearTimeout(this.connectionTimeout);
+      this.connectionTimeout = null;
+    }
+
     // If we already have a connection promise, return it
     if (this.connectionPromise) {
       return this.connectionPromise;
@@ -32,99 +39,108 @@ class SocketService {
       return Promise.resolve(this.gameSocket);
     }
   
-    // Create a connection promise without using async in the executor
+    // Create a connection promise with timeout handling
     this.connectionPromise = new Promise((resolve, reject) => {
+      // Set a timeout to prevent hanging connections
+      this.connectionTimeout = setTimeout(() => {
+        console.error('Socket connection timeout after 10 seconds');
+        this.connectionPromise = null;
+        reject(new Error('Connection timeout'));
+      }, 10000);
+
       // Move the async logic to a separate function
-      const setupConnection = async () => {
-        try {
-          // Load configuration to get the socket URL
-          const config = await loadConfig();
-          
-          // Get the socket URL from config
-          const socketUrl = config.socketUrl || window.location.origin;
-          console.log('Connecting to socket server at:', socketUrl);
-          
-          // If there's an existing socket, disconnect it
-          if (this.gameSocket) {
-            this.gameSocket.disconnect();
-            this.gameSocket = null;
-          }
-          
-          // Connect to game namespace with settings that work with ngrok
-          this.gameSocket = io(`${socketUrl}/game`, {
-            transports: ['websocket', 'polling'], // Try both transport methods
-            reconnection: true,
-            reconnectionAttempts: 5,
-            reconnectionDelay: 1000,
-            timeout: 15000, // Longer timeout for potentially slower connections
-            autoConnect: true,
-            withCredentials: true, // Important for CORS with cookies
-            forceNew: true, // Force a new connection
-            extraHeaders: {
-              // Add explicit headers that might help with CORS
-              'Origin': window.location.origin
-            }
-          });
-          
-          // Add connection event listener
-          this.gameSocket.on('connect', () => {
-            console.log('Connected to game socket with ID:', this.gameSocket.id);
-            console.log('Using transport:', this.gameSocket.io.engine.transport.name);
-            this.isConnected = true;
-            this.connectionAttempts = 0;
+      const setupConnection = () => {
+        // Load configuration to get the socket URL
+        loadConfig()
+          .then(config => {
+            // Get the socket URL from config
+            const socketUrl = config.socketUrl || window.location.origin;
+            console.log('Connecting to socket server at:', socketUrl);
             
-            // Register user if available
-            const user = store.getters.currentUser;
-            if (user && user.id) {
-              this.registerUser(user.id);
+            // If there's an existing socket, disconnect it
+            if (this.gameSocket) {
+              this.gameSocket.disconnect();
+              this.gameSocket = null;
             }
             
-            resolve(this.gameSocket);
-          });
-          
-          // Add connection error listener with more details
-          this.gameSocket.on('connect_error', (error) => {
-            console.error('Socket connection error:', error);
-            console.error('Error type:', error.type);
-            console.error('Error message:', error.message);
-            console.error('Error description:', error.description);
+            // Connect to game namespace with optimized settings
+            this.gameSocket = io(`${socketUrl}/game`, {
+              transports: ['websocket', 'polling'], // Try both transport methods
+              reconnection: true,
+              reconnectionAttempts: 5,
+              reconnectionDelay: 1000,
+              timeout: 8000, // Reduced timeout for faster feedback
+              autoConnect: true,
+              withCredentials: true,
+              forceNew: true
+            });
             
-            // Increment connection attempts
-            this.connectionAttempts++;
+            // Add connection event listener
+            this.gameSocket.on('connect', () => {
+              console.log('Connected to game socket with ID:', this.gameSocket.id);
+              console.log('Using transport:', this.gameSocket.io.engine.transport.name);
+              this.isConnected = true;
+              this.connectionAttempts = 0;
+              
+              // Clear the connection timeout
+              if (this.connectionTimeout) {
+                clearTimeout(this.connectionTimeout);
+                this.connectionTimeout = null;
+              }
+              
+              // Register user if available
+              const user = store.getters.currentUser;
+              if (user && user.id) {
+                this.registerUser(user.id);
+              }
+              
+              resolve(this.gameSocket);
+            });
             
-            if (this.connectionAttempts >= this.maxConnectionAttempts) {
-              this.connectionPromise = null;
-              reject(new Error(`Failed to connect to socket server after ${this.maxConnectionAttempts} attempts`));
+            // Add connection error listener with more details
+            this.gameSocket.on('connect_error', (error) => {
+              console.error('Socket connection error:', error);
+              
+              // Increment connection attempts
+              this.connectionAttempts++;
+              
+              if (this.connectionAttempts >= this.maxConnectionAttempts) {
+                if (this.connectionTimeout) {
+                  clearTimeout(this.connectionTimeout);
+                  this.connectionTimeout = null;
+                }
+                this.connectionPromise = null;
+                reject(new Error(`Failed to connect after ${this.maxConnectionAttempts} attempts`));
+              }
+            });
+            
+            // Add disconnect listener
+            this.gameSocket.on('disconnect', (reason) => {
+              console.log('Disconnected from game socket. Reason:', reason);
+              this.isConnected = false;
+              
+              // Reset connection promise if disconnected permanently
+              if (reason === 'io server disconnect' || reason === 'transport close') {
+                this.connectionPromise = null;
+              }
+            });
+            
+            // Set up game event listeners
+            this.setupGameListeners();
+          })
+          .catch(error => {
+            console.error('Error loading config in socket service:', error);
+            if (this.connectionTimeout) {
+              clearTimeout(this.connectionTimeout);
+              this.connectionTimeout = null;
             }
+            this.connectionPromise = null;
+            reject(error);
           });
-          
-          // Add disconnect listener
-          this.gameSocket.on('disconnect', (reason) => {
-            console.log('Disconnected from game socket. Reason:', reason);
-            this.isConnected = false;
-            
-            // Reset connection promise if disconnected permanently
-            if (reason === 'io server disconnect' || reason === 'transport close') {
-              this.connectionPromise = null;
-            }
-          });
-          
-          // Add error listener
-          this.gameSocket.on('error', (error) => {
-            console.error('Socket error:', error);
-          });
-          
-          // Set up game event listeners
-          this.setupGameListeners();
-        } catch (error) {
-          console.error('Error initializing socket service:', error);
-          this.connectionPromise = null;
-          reject(error);
-        }
       };
   
       // Execute the setup function
-      setupConnection().catch(reject);
+      setupConnection();
     });
     
     return this.connectionPromise;
@@ -172,29 +188,113 @@ class SocketService {
       throw new Error('Missing required parameters for joinGame');
     }
     
-    // Make sure socket is initialized and connected
+    // Make sure socket is initialized and connected with timeout
     try {
+      // First initialize socket connection
       await this.init();
       
-      console.log(`Joining game ${gameId} as ${username} (${userId})`);
-      
-      // Join the game room
-      this.gameSocket.emit('joinGame', {
-        gameId,
-        userId,
-        username
+      // Then create promise for game joining
+      const joinPromise = new Promise((resolve, reject) => {
+        // Set a timeout for the join operation
+        const joinTimeout = setTimeout(() => {
+          reject(new Error('Join game timeout after 8 seconds'));
+        }, 8000);
+        
+        // Set up a one-time event listener for join confirmation
+        this.gameSocket.once('gameUpdate', () => {
+          clearTimeout(joinTimeout);
+          resolve(true);
+        });
+        
+        // Also listen for errors
+        const errorHandler = (error) => {
+          clearTimeout(joinTimeout);
+          reject(error);
+        };
+        
+        this.gameSocket.once('gameError', errorHandler);
+        
+        console.log(`Joining game ${gameId} as ${username} (${userId})`);
+        
+        // Join the game room
+        this.gameSocket.emit('joinGame', {
+          gameId,
+          userId,
+          username
+        });
+        
+        // Request game state update as a backup
+        setTimeout(() => {
+          this.requestGameUpdate(gameId, userId);
+        }, 500);
       });
       
-      // Immediately request a game state update to ensure everyone is in sync
-      setTimeout(() => {
-        this.requestGameUpdate(gameId, userId);
-      }, 500);
-      
-      return true;
+      return await joinPromise;
     } catch (error) {
       console.error('Error joining game:', error);
       throw error;
     }
+  }
+
+  /**
+   * Start a game
+   * @param {string} gameId - Game ID
+   * @param {string} userId - User ID
+   * @returns {Promise} Promise that resolves when game starts
+   */
+  startGame(gameId, userId) {
+    // First initialize the socket, then handle the game start
+    return this.init().then(() => {
+      return new Promise((resolve, reject) => {
+        if (!gameId || !userId) {
+          return reject(new Error('Missing required parameters for startGame'));
+        }
+        
+        if (!this.gameSocket || !this.isConnected) {
+          return reject(new Error('Socket not connected'));
+        }
+        
+        console.log(`Emitting startGame event for game ${gameId}`);
+        
+        // Set a timeout for the operation
+        const startTimeout = setTimeout(() => {
+          reject(new Error('Start game timeout after 10 seconds'));
+        }, 10000);
+        
+        // Set up a one-time event listener for confirmation
+        this.gameSocket.once('gameStarted', (data) => {
+          console.log('Received gameStarted event:', data);
+          clearTimeout(startTimeout);
+          resolve(data);
+        });
+        
+        // Also listen for errors
+        const errorHandler = (error) => {
+          console.error('Game error during start:', error);
+          clearTimeout(startTimeout);
+          reject(error);
+        };
+        
+        this.gameSocket.once('gameError', errorHandler);
+        
+        // Emit the start game event
+        this.gameSocket.emit('startGame', {
+          gameId,
+          userId
+        });
+        
+        // Also emit a simple log message for debugging
+        this.gameSocket.emit('chatMessage', {
+          gameId,
+          userId,
+          username: 'System',
+          message: 'Starting game...'
+        });
+      });
+    }).catch(error => {
+      console.error('Error in startGame:', error);
+      throw error;
+    });
   }
 
   /**
@@ -222,106 +322,49 @@ class SocketService {
   }
 
   /**
-   * Setup game event listeners
+   * Request game state update
+   * @param {string} gameId - Game ID
+   * @param {string} userId - User ID
+   * @returns {Promise} Promise that resolves when update is received
    */
-  setupGameListeners() {
-    if (!this.gameSocket) return;
-    
-    // Game state updates
-    this.gameSocket.on('gameUpdate', (gameState) => {
-      console.log('Received game update:', gameState);
-      store.dispatch('updateGameState', gameState);
-      this.emit('gameUpdate', gameState);
-    });
-    
-    // Game started
-    this.gameSocket.on('gameStarted', (gameState) => {
-      console.log('Game started:', gameState);
-      store.dispatch('updateGameState', gameState);
-      this.emit('gameStarted', gameState);
-    });
-    
-    // Player joined
-    this.gameSocket.on('playerJoined', (data) => {
-      console.log('Player joined:', data);
-      this.emit('playerJoined', data);
-      
-      // Request fresh game state after player joins
-      const gameId = store.getters.currentGameId;
-      const userId = store.getters.currentUser?.id;
-      if (gameId && userId) {
-        // Small delay to ensure server has processed the join
-        setTimeout(() => {
-          this.requestGameUpdate(gameId, userId);
-        }, 200);
+  requestGameUpdate(gameId, userId) {
+    return new Promise((resolve, reject) => {
+      if (!gameId) {
+        return reject(new Error('Game ID is required'));
       }
-    });
-    
-    // Player left
-    this.gameSocket.on('playerLeft', (data) => {
-      console.log('Player left:', data);
-      this.emit('playerLeft', data);
-    });
-    
-    // Chat message
-    this.gameSocket.on('chatMessage', (data) => {
-      this.emit('chatMessage', data);
-    });
-    
-    // Deal cards
-    this.gameSocket.on('dealCards', (data) => {
-      this.emit('dealCards', data);
-    });
-    
-    // Your turn
-    this.gameSocket.on('yourTurn', (data) => {
-      store.dispatch('yourTurn', data);
-      this.emit('yourTurn', data);
-    });
-    
-    // Turn changed
-    this.gameSocket.on('turnChanged', (data) => {
-      this.emit('turnChanged', data);
-    });
-    
-    // Action taken
-    this.gameSocket.on('actionTaken', (data) => {
-      this.emit('actionTaken', data);
-    });
-    
-    // Deal community cards
-    this.gameSocket.on('dealFlop', (data) => {
-      this.emit('dealFlop', data);
-    });
-    
-    this.gameSocket.on('dealTurn', (data) => {
-      this.emit('dealTurn', data);
-    });
-    
-    this.gameSocket.on('dealRiver', (data) => {
-      this.emit('dealRiver', data);
-    });
-    
-    // Hand results
-    this.gameSocket.on('handResult', (data) => {
-      this.emit('handResult', data);
-    });
-    
-    // New hand
-    this.gameSocket.on('newHand', (data) => {
-      this.emit('newHand', data);
-    });
-    
-    // Game ended
-    this.gameSocket.on('gameEnded', (data) => {
-      this.emit('gameEnded', data);
-    });
-    
-    // Game error
-    this.gameSocket.on('gameError', (data) => {
-      console.error('Game error:', data);
-      store.commit('SET_ERROR_MESSAGE', data.message);
-      this.emit('gameError', data);
+      
+      if (!this.gameSocket || !this.isConnected) {
+        return reject(new Error('Socket not connected'));
+      }
+      
+      console.log(`Requesting game update for ${gameId}`);
+      
+      // Set a timeout for the update request
+      const updateTimeout = setTimeout(() => {
+        reject(new Error('Game update timeout after 5 seconds'));
+      }, 5000);
+      
+      // Listen for game update event
+      const updateHandler = () => {
+        clearTimeout(updateTimeout);
+        resolve();
+      };
+      
+      this.gameSocket.once('gameUpdate', updateHandler);
+      
+      // Listen for errors
+      const errorHandler = (error) => {
+        clearTimeout(updateTimeout);
+        reject(error);
+      };
+      
+      this.gameSocket.once('gameError', errorHandler);
+      
+      // Send the update request
+      this.gameSocket.emit('requestGameUpdate', {
+        gameId,
+        userId
+      });
     });
   }
 
@@ -378,52 +421,46 @@ class SocketService {
   }
 
   /**
-   * Request game state update
-   * @param {string} gameId - Game ID
-   * @param {string} userId - User ID
+   * Setup game event listeners
    */
-  requestGameUpdate(gameId, userId) {
-    if (!gameId) {
-      console.warn('Cannot request game update - missing gameId');
-      return;
-    }
+  setupGameListeners() {
+    if (!this.gameSocket) return;
     
-    if (!this.gameSocket || !this.isConnected) {
-      console.warn('Cannot request game update - socket not connected');
-      return;
-    }
+    // Define events to listen for
+    const events = [
+      'gameUpdate',
+      'gameStarted',
+      'playerJoined',
+      'playerLeft',
+      'chatMessage',
+      'dealCards',
+      'yourTurn',
+      'turnChanged',
+      'actionTaken',
+      'dealFlop',
+      'dealTurn',
+      'dealRiver',
+      'handResult',
+      'newHand',
+      'gameEnded',
+      'gameError',
+      'playerConnectionChange'
+    ];
     
-    console.log(`Requesting game update for ${gameId}`);
-    this.gameSocket.emit('requestGameUpdate', {
-      gameId,
-      userId
+    // Register listeners for each event
+    events.forEach(event => {
+      // Remove any existing listeners to prevent duplicates
+      this.gameSocket.off(event);
+      
+      // Add new listener that will emit to our own events system
+      this.gameSocket.on(event, (data) => {
+        this.emit(event, data);
+      });
     });
   }
 
   /**
-   * Start a game
-   * @param {string} gameId - Game ID
-   * @param {string} userId - User ID
-   */
-  startGame(gameId, userId) {
-    if (!gameId || !userId) {
-      console.warn('Cannot start game - missing required parameters');
-      return;
-    }
-    
-    if (!this.gameSocket || !this.isConnected) {
-      console.warn('Cannot start game - socket not connected');
-      return;
-    }
-    
-    this.gameSocket.emit('startGame', {
-      gameId,
-      userId
-    });
-  }
-
-  /**
-   * Disconnect from all sockets
+   * Disconnect from socket
    */
   disconnect() {
     if (this.gameSocket) {
@@ -434,65 +471,6 @@ class SocketService {
     this.isConnected = false;
     this.connectionPromise = null;
     this.connectionAttempts = 0;
-  }
-
-  debug() {
-    console.log('Socket Debug Info:');
-    console.log('- Is Connected:', this.isConnected);
-    console.log('- Socket ID:', this.gameSocket?.id || 'none');
-    console.log('- Socket Connected:', this.gameSocket?.connected || false);
-    console.log('- Socket Namespace:', this.gameSocket?.nsp || 'none');
-    console.log('- Connection Attempts:', this.connectionAttempts);
-    
-    if (this.gameSocket && this.gameSocket.io) {
-      console.log('- Transport Type:', this.gameSocket.io.engine?.transport?.name || 'none');
-      console.log('- Engine ReadyState:', this.gameSocket.io.engine?.readyState || 'none');
-      console.log('- Engine Transport Options:', this.gameSocket.io.engine?.opts || 'none');
-    }
-    
-    // List all event listeners
-    console.log('- Registered Event Handlers:');
-    const events = Object.keys(this.events);
-    events.forEach(event => {
-      console.log(`  - ${event}: ${this.events[event].length} handlers`);
-    });
-    
-    return {
-      connected: this.isConnected,
-      socketId: this.gameSocket?.id,
-      transport: this.gameSocket?.io?.engine?.transport?.name,
-      events: events
-    };
-  }
-
-  debugSocket() {
-    // Assuming SocketService is imported as a global in your app
-    return SocketService.debug();
-  }
-
-  attemptReconnection() {
-    console.log('Attempting to reconnect socket...');
-    
-    // Reset connection state
-    this.isConnected = false;
-    this.connectionPromise = null;
-    
-    // Close existing socket if any
-    if (this.gameSocket) {
-      this.gameSocket.close();
-      this.gameSocket = null;
-    }
-    
-    // Attempt to initialize again
-    return this.init();
-  }
-
-  /**
-   * Get connection status
-   * @returns {boolean} Connection status
-   */
-  isSocketConnected() {
-    return this.isConnected && this.gameSocket && this.gameSocket.connected;
   }
 
   /**
@@ -525,6 +503,39 @@ class SocketService {
   emit(event, data) {
     if (!this.events[event]) return;
     this.events[event].forEach(callback => callback(data));
+  }
+
+  /**
+   * Get connection status
+   * @returns {boolean} Connection status
+   */
+  isSocketConnected() {
+    return this.isConnected && this.gameSocket && this.gameSocket.connected;
+  }
+
+  /**
+   * Debug information about socket state
+   */
+  debug() {
+    console.group('Socket Debug Info');
+    console.log('Is Connected:', this.isConnected);
+    console.log('Socket ID:', this.gameSocket?.id || 'none');
+    console.log('Socket Connected:', this.gameSocket?.connected || false);
+    console.log('Connection Attempts:', this.connectionAttempts);
+    
+    // List all event listeners
+    console.log('Registered Event Handlers:');
+    const events = Object.keys(this.events);
+    events.forEach(event => {
+      console.log(`- ${event}: ${this.events[event].length} handlers`);
+    });
+    console.groupEnd();
+    
+    return {
+      connected: this.isConnected,
+      socketId: this.gameSocket?.id,
+      handlers: events.length
+    };
   }
 }
 

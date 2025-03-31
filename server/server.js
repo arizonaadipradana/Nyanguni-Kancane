@@ -24,11 +24,13 @@ const server = http.createServer(app);
 
 // CORS middleware - simplified version
 app.use(cors({
-  origin: true, // Allow all origins
+  origin: ['http://localhost:8080', 'http://127.0.0.1:8080'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
 }));
+
+app.options('*', cors());
 
 // Body parsers
 app.use(express.json());
@@ -39,13 +41,28 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/games', require('./routes/games'));
 app.use('/api/config', require('./routes/config'));
 
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'http://localhost:8080');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
 // Socket.io setup with simplified CORS
 const io = socketIO(server, {
   cors: {
-    origin: true, // Allow all origins
+    origin: ['http://localhost:8080', 'http://127.0.0.1:8080'],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    credentials: true
-  }
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+  },
+  transports: ['websocket', 'polling']
 });
 
 // Initialize sockets
@@ -66,12 +83,23 @@ if (process.env.NODE_ENV === 'production') {
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Default route for API check
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'API test endpoint working',
+    clientOrigin: req.headers.origin || 'Unknown',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Update the default route to include more diagnostic information
 app.get('/api', (req, res) => {
   res.json({ 
     message: 'Nyanguni Kancane API is running',
     version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    clientOrigin: req.headers.origin || 'Unknown',
+    allowedOrigins: ['http://localhost:8080', 'http://127.0.0.1:8080'],
+    timestamp: new Date().toISOString()
   });
 });
 

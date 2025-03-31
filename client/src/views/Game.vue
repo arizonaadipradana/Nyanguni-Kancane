@@ -1,18 +1,7 @@
 <!-- client/src/views/Game.vue -->
 <template>
   <div class="game-container">
-    <div class="game-header">
-      <h2>Nyanguni Kancane - Game #{{ gameId }}</h2>
-      <div class="game-info">
-        <span>Pot: {{ currentGame ? currentGame.pot : 0 }} chips</span>
-        <button @click="copyGameId" class="btn-secondary btn-sm">
-          Share Game ID
-        </button>
-        <button @click="leaveGame" class="btn-danger btn-sm">
-          Leave Game
-        </button>
-      </div>
-    </div>
+    <GameHeader :gameId="gameId" :currentGame="currentGame" @copyGameId="copyGameId" @leaveGame="leaveGame" />
 
     <div v-if="errorMessage" class="error-message">
       {{ errorMessage }}
@@ -24,127 +13,67 @@
 
     <div v-else class="game-area">
       <!-- Game status -->
-      <div class="game-status">
-        <div v-if="currentGame.status === 'waiting'">
-          <p>Waiting for players to join...</p>
-          <p>Game ID: <strong>{{ gameId }}</strong></p>
-          <p>Players: {{ currentGame.players.length }}/8</p>
-
-          <button v-if="isCreator" @click="handleStartGame" class="btn"
-            :disabled="currentGame.players.length < 2 || isStarting">
-            {{ isStarting ? 'Starting...' : 'Start Game' }}
-          </button>
-        </div>
-
-        <div v-else>
-          <p>Game in progress</p>
-          <p>Current turn: {{ getCurrentPlayerName() }}</p>
-          <p>Current bet: {{ currentGame.currentBet }} chips</p>
-        </div>
-      </div>
+      <GameStatus :currentGame="currentGame" :gameId="gameId" :isCreator="isCreator" :isStarting="isStarting"
+        @startGame="handleStartGame" @getCurrentPlayerName="getCurrentPlayerName" />
 
       <!-- Game table -->
       <div class="game-table">
         <!-- Community cards -->
-        <div class="community-cards">
-          <h3>Community Cards</h3>
-          <div class="cards-container">
-            <div v-for="(card, index) in currentGame.communityCards" :key="index" class="card-display">
-              {{ formatCard(card) }}
-            </div>
-            <div v-for="i in (5 - currentGame.communityCards.length)" :key="`empty-${i}`" class="card-display empty">
-              ?
-            </div>
-          </div>
-        </div>
+        <CommunityCards :communityCards="currentGame.communityCards" :formatCard="formatCard" />
 
         <!-- Players -->
-        <div class="players-container">
-          <div v-for="player in currentGame.players" :key="player.id" class="player-spot" :class="{
-            'current-player': player.id === currentUser.id,
-            'active-turn': player.id === currentGame.currentTurn,
-            'folded': player.hasFolded
-          }">
-            <div class="player-info">
-              <div class="player-name">{{ player.username }}</div>
-              <div class="player-chips">
-                Chips: {{ player.totalChips }}
-                <span v-if="player.chips > 0">({{ player.chips }} in pot)</span>
-              </div>
-              <div v-if="player.hasFolded" class="player-status">Folded</div>
-              <div v-else-if="player.hasActed" class="player-status">Acted</div>
-            </div>
-
-            <div v-if="player.id === currentUser.id" class="player-hand">
-              <div v-for="(card, index) in playerHand" :key="index" class="card-display player-card">
-                {{ formatCard(card) }}
-              </div>
-            </div>
-            <div v-else class="player-hand">
-              <div v-for="i in (player.hasCards ? 2 : 0)" :key="`back-${i}`" class="card-display card-back">
-                ●●
-              </div>
-            </div>
-          </div>
-        </div>
+        <PlayerList :players="currentGame.players" :currentUser="currentUser" :currentTurn="currentGame.currentTurn"
+          :playerHand="playerHand" :formatCard="formatCard" />
 
         <!-- Player actions -->
-        <div v-if="isYourTurn" class="player-actions">
-          <h3>Your Turn</h3>
-
-          <div class="action-buttons">
-            <button v-if="availableActions.includes('fold')" @click="handleAction('fold')" class="btn btn-danger">
-              Fold
-            </button>
-
-            <button v-if="availableActions.includes('check')" @click="handleAction('check')" class="btn">
-              Check
-            </button>
-
-            <button v-if="availableActions.includes('call')" @click="handleAction('call')" class="btn">
-              Call {{ currentGame.currentBet - getPlayerChipsInPot() }} chips
-            </button>
-
-            <div v-if="availableActions.includes('bet')" class="bet-action">
-              <button @click="handleAction('bet', betAmount)" class="btn">
-                Bet {{ betAmount }} chips
-              </button>
-              <input type="range" v-model.number="betAmount" :min="1"
-                :max="getCurrentPlayer() ? getCurrentPlayer().totalChips : 1" class="bet-slider" />
-            </div>
-
-            <div v-if="availableActions.includes('raise')" class="bet-action">
-              <button @click="handleAction('raise', raiseAmount)" class="btn">
-                Raise to {{ raiseAmount }} chips
-              </button>
-              <input type="range" v-model.number="raiseAmount" :min="currentGame.currentBet * 2"
-                :max="getCurrentPlayer() ? (getCurrentPlayer().totalChips + getCurrentPlayer().chips) : 1"
-                class="bet-slider" />
-            </div>
-          </div>
-        </div>
+        <PlayerActions v-if="isYourTurn" :availableActions="availableActions" :currentGame="currentGame"
+          :betAmount="betAmount" :raiseAmount="raiseAmount" @updateBetAmount="betAmount = $event"
+          @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction"
+          @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
       </div>
 
       <!-- Game chat/log -->
-      <div class="game-log">
-        <h3>Game Log</h3>
-        <div class="log-entries">
-          <div v-for="(entry, index) in gameLog" :key="index" class="log-entry">
-            {{ entry }}
-          </div>
-        </div>
-      </div>
+      <GameLog :gameLog="gameLog" />
     </div>
+
+    <!-- Debug toggle button -->
+    <button @click="showDebugPanel = !showDebugPanel" class="debug-toggle">
+      {{ showDebugPanel ? 'Hide Debug' : 'Show Debug' }}
+    </button>
+
+    <button @click="debugCreatorCheck()" class="debug-btn">Debug Creator Check</button>
+
+    <!-- Debug panel -->
+    <GameDebugPanel :enabled="showDebugPanel" :gameId="gameId" :currentGame="currentGame" :currentUser="currentUser"
+      :isCreator="isCreator" :isConnected="isConnected" @close="showDebugPanel = false" @log="addToLog"
+      @forceStart="forceStartGame" />
   </div>
 </template>
 
 <script>
-
-import SocketService from '@/services/SocketService'
-import { mapGetters, mapActions, mapMutations } from 'vuex'
+import SocketService from '@/services/SocketService';
+import { mapGetters, mapActions, mapMutations } from 'vuex';
+import GameHeader from '@/components/Game/GameHeader.vue';
+import GameStatus from '@/components/Game/GameStatus.vue';
+import CommunityCards from '@/components/Game/CommunityCards.vue';
+import PlayerList from '@/components/Game/PlayerList.vue';
+import PlayerActions from '@/components/Game/PlayerActions.vue';
+import GameLog from '@/components/Game/GameLog.vue';
+import GameDebugPanel from '@/components/Game/GameDebugPanel.vue';
+import {extractMongoId } from '@/utils/idUtils';
 
 export default {
   name: 'Game',
+
+  components: {
+    GameHeader,
+    GameStatus,
+    CommunityCards,
+    PlayerList,
+    PlayerActions,
+    GameLog,
+    GameDebugPanel
+  },
 
   data() {
     return {
@@ -156,8 +85,12 @@ export default {
       betAmount: 1,
       raiseAmount: 0,
       showResult: false,
-      handResult: null
-    }
+      handResult: null,
+      actionTimer: null,
+      actionTimeLimit: 30,
+      actionTimeRemaining: 30,
+      showDebugPanel: false
+    };
   },
 
   computed: {
@@ -171,8 +104,46 @@ export default {
     ]),
 
     isCreator() {
-      if (!this.currentGame || !this.currentUser) return false
-      return this.currentGame.creator && this.currentGame.creator.id === this.currentUser.id
+      if (!this.currentGame || !this.currentUser) {
+        console.log('isCreator check failed: currentGame or currentUser is null');
+        return false;
+      }
+
+      // Log the raw creator and user data for debugging
+      console.log('Creator data:', JSON.stringify(this.currentGame.creator));
+      console.log('Current user:', JSON.stringify(this.currentUser));
+
+      // Extract creator ID
+      let creatorId = null;
+
+      // Handle MongoDB $oid structure
+      if (this.currentGame.creator && this.currentGame.creator.user) {
+        if (typeof this.currentGame.creator.user === 'object' && this.currentGame.creator.user.$oid) {
+          creatorId = this.currentGame.creator.user.$oid;
+        } else {
+          creatorId = extractMongoId(this.currentGame.creator.user);
+        }
+      }
+
+      if (!creatorId) {
+        console.log('isCreator check failed: could not find creator ID');
+        return false;
+      }
+
+      // Extract current user ID
+      const currentUserId = extractMongoId(this.currentUser.id || this.currentUser._id);
+
+      if (!currentUserId) {
+        console.log('isCreator check failed: could not find current user ID');
+        return false;
+      }
+
+      // Log the extracted IDs for debugging
+      console.log('Extracted creator ID:', creatorId);
+      console.log('Extracted user ID:', currentUserId);
+      console.log('ID match:', creatorId === currentUserId);
+
+      return creatorId === currentUserId;
     }
   },
 
@@ -194,59 +165,59 @@ export default {
     ]),
 
     getCurrentPlayerName() {
-      if (!this.currentGame || !this.currentGame.currentTurn) return 'N/A'
+      if (!this.currentGame || !this.currentGame.currentTurn) return 'N/A';
 
       const player = this.currentGame.players.find(
         p => p.id === this.currentGame.currentTurn
-      )
+      );
 
-      return player ? player.username : 'Unknown'
+      return player ? player.username : 'Unknown';
     },
 
     getCurrentPlayer() {
-      if (!this.currentGame || !this.currentUser) return null
+      if (!this.currentGame || !this.currentUser) return null;
 
       return this.currentGame.players.find(
         p => p.id === this.currentUser.id
-      ) || null
+      ) || null;
     },
 
     getPlayerChipsInPot() {
-      const player = this.getCurrentPlayer()
-      return player ? player.chips : 0
+      const player = this.getCurrentPlayer();
+      return player ? player.chips : 0;
     },
 
     formatCard(card) {
-      if (!card) return '?'
+      if (!card) return '?';
 
       const suitSymbols = {
         hearts: '♥',
         diamonds: '♦',
         clubs: '♣',
         spades: '♠'
-      }
+      };
 
-      return `${card.rank}${suitSymbols[card.suit]}`
+      return `${card.rank}${suitSymbols[card.suit]}`;
     },
 
     copyGameId() {
       // Modern clipboard API
       navigator.clipboard.writeText(this.gameId)
         .then(() => {
-          alert('Game ID copied to clipboard')
+          alert('Game ID copied to clipboard');
         })
         .catch(err => {
-          console.error('Could not copy text: ', err)
+          console.error('Could not copy text: ', err);
 
           // Fallback method
-          const el = document.createElement('textarea')
-          el.value = this.gameId
-          document.body.appendChild(el)
-          el.select()
-          document.execCommand('copy')
-          document.body.removeChild(el)
-          alert('Game ID copied to clipboard')
-        })
+          const el = document.createElement('textarea');
+          el.value = this.gameId;
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand('copy');
+          document.body.removeChild(el);
+          alert('Game ID copied to clipboard');
+        });
     },
 
     leaveGame() {
@@ -256,29 +227,41 @@ export default {
       }
     },
 
-    sendChatMessage() {
-      if (!this.chatInput.trim()) return;
-
-      SocketService.sendChatMessage(
-        this.gameId,
-        this.currentUser.id,
-        this.currentUser.username,
-        this.chatInput.trim()
-      );
-
-      this.chatInput = '';
-    },
-
     async handleStartGame() {
-      this.isStarting = true
+      this.isStarting = true;
+      this.addToLog('Attempting to start the game...');
 
       try {
-        await this.startGame(this.gameId)
-        this.addToLog('Game started!')
+        console.log('Starting game:', this.gameId);
+        console.log('Current user:', this.currentUser);
+        console.log('Players in game:', this.currentGame.players.length);
+
+        // First call the API to update the game status
+        const result = await this.startGame(this.gameId);
+
+        if (result.success) {
+          this.addToLog('Game started!');
+
+          // Then emit the socket event
+          console.log('Emitting socket startGame event');
+          await SocketService.startGame(this.gameId, this.currentUser.id);
+          console.log('Socket startGame event sent successfully');
+
+          // Request a fresh game state update
+          setTimeout(() => {
+            this.addToLog('Requesting updated game state...');
+            SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+          }, 500);
+        } else {
+          console.error('Start game API returned error:', result.error);
+          throw new Error(result.error || 'Failed to start game');
+        }
       } catch (error) {
-        console.error('Error starting game:', error)
+        console.error('Error starting game:', error);
+        this.SET_ERROR_MESSAGE(error.message || 'Error starting game. Please try again.');
+        this.addToLog(`Failed to start game: ${error.message}`);
       } finally {
-        this.isStarting = false
+        this.isStarting = false;
       }
     },
 
@@ -311,12 +294,12 @@ export default {
     },
 
     addToLog(message) {
-      const timestamp = new Date().toLocaleTimeString()
-      this.gameLog.unshift(`[${timestamp}] ${message}`)
+      const timestamp = new Date().toLocaleTimeString();
+      this.gameLog.unshift(`[${timestamp}] ${message}`);
 
       // Keep log at reasonable size
       if (this.gameLog.length > 50) {
-        this.gameLog.pop()
+        this.gameLog.pop();
       }
     },
 
@@ -383,6 +366,34 @@ export default {
       }
     },
 
+    startActionTimer(timeLimit = 30) {
+      this.actionTimeLimit = timeLimit;
+      this.actionTimeRemaining = timeLimit;
+
+      // Clear any existing timer
+      this.clearActionTimer();
+
+      // Set a new timer that updates every second
+      this.actionTimer = setInterval(() => {
+        this.actionTimeRemaining--;
+
+        if (this.actionTimeRemaining <= 0) {
+          this.clearActionTimer();
+
+          // Auto-fold when time runs out
+          this.handleAction('fold');
+          this.addToLog('Time ran out - auto-folding');
+        }
+      }, 1000);
+    },
+
+    clearActionTimer() {
+      if (this.actionTimer) {
+        clearInterval(this.actionTimer);
+        this.actionTimer = null;
+      }
+    },
+
     // Handler methods
     handleGameUpdate(gameState) {
       console.log('Game update received:', gameState);
@@ -424,14 +435,7 @@ export default {
     },
 
     handleChatMessage(message) {
-      this.chatMessages.push(message);
-
-      // Keep chat at reasonable size
-      if (this.chatMessages.length > 100) {
-        this.chatMessages.shift();
-      }
-
-      // If it's a system message, also add to game log
+      // If it's a system message, add to game log
       if (message.type === 'system') {
         this.addToLog(message.message);
       }
@@ -503,57 +507,83 @@ export default {
       this.SET_ERROR_MESSAGE(data.message);
       this.addToLog(`Error: ${data.message}`);
     },
+
+    /**
+     * Debug the game state in the console
+     */
+    debugGameState() {
+      console.group('Game State Debug');
+
+      // Log basic game info
+      console.log('Game ID:', this.gameId);
+      console.log('Current user:', this.currentUser);
+      console.log('Is creator:', this.isCreator);
+
+      // Log game state
+      if (this.currentGame) {
+        console.log('Game status:', this.currentGame.status);
+        console.log('Player count:', this.currentGame.players.length);
+        console.log('Players:', this.currentGame.players);
+
+        // Check creator comparison
+        const creatorId = this.currentGame.creator && this.currentGame.creator.user ?
+          (typeof this.currentGame.creator.user === 'object' ?
+            this.currentGame.creator.user.toString() : this.currentGame.creator.user) : '';
+
+        const currentUserId = this.currentUser ? this.currentUser.id.toString() : '';
+
+        console.log('Creator ID:', creatorId);
+        console.log('Current user ID:', currentUserId);
+        console.log('IDs match:', creatorId === currentUserId);
+
+        // Check button conditions
+        console.log('Should show start button:',
+          this.isCreator &&
+          this.currentGame.status === 'waiting' &&
+          this.currentGame.players.length >= 2);
+      } else {
+        console.log('No current game data');
+      }
+
+      // Log socket state
+      console.log('Socket connected:', SocketService.isConnected);
+
+      console.groupEnd();
+
+      // Return status message
+      return {
+        status: this.currentGame ? this.currentGame.status : 'unknown',
+        playerCount: this.currentGame ? this.currentGame.players.length : 0,
+        isCreator: this.isCreator,
+        socketConnected: SocketService.isConnected
+      };
+    },
+    forceStartGame() {
+      console.log('Force starting game through debug panel');
+      this.handleStartGame();
+    }
   },
 
   created() {
-    this.gameId = this.$route.params.id
-    this.SET_CURRENT_GAME_ID(this.gameId)
+    this.gameId = this.$route.params.id;
+    this.SET_CURRENT_GAME_ID(this.gameId);
 
     // Fetch game data
     this.fetchGame(this.gameId)
       .then(() => {
         if (this.currentGame) {
-          this.addToLog(`Joined game #${this.gameId}`)
+          this.addToLog(`Joined game #${this.gameId}`);
 
           // Set up socket connection
-          this.setupSocketConnection()
+          this.setupSocketConnection();
         }
       })
       .catch(error => {
-        console.error('Error fetching game:', error)
-      })
-    window.debugGame = {
-      socket: null,
-      game: this,
-      requestUpdate: () => {
-        if (this.gameId && this.currentUser) {
-          console.log('Manually requesting game update for debugging');
-          if (this.socket) {
-            this.socket.emit('requestGameUpdate', {
-              gameId: this.gameId,
-              userId: this.currentUser.id
-            });
-          } else {
-            console.error('Socket not available');
-          }
-        } else {
-          console.error('Game ID or user not available');
-        }
-      },
-      getState: () => {
-        return {
-          gameId: this.gameId,
-          currentGame: this.currentGame,
-          isConnected: this.isConnected,
-          socket: this.socket ? {
-            id: this.socket.id,
-            connected: this.socket.connected,
-            disconnected: this.socket.disconnected
-          } : null
-        };
-      }
-    };
-    window.debugGame.socket = this.socket;
+        console.error('Error fetching game:', error);
+      });
+
+    // Make the debug function available globally
+    window.debugGame = this.debugGameState.bind(this);
   },
 
   beforeDestroy() {
@@ -579,8 +609,93 @@ export default {
     this.clearActionTimer();
 
     this.clearErrorMessage();
+  },
+
+  // Add this to your Game.vue methods:
+
+  debugCreatorCheck() {
+    console.group('Creator Check Debug');
+
+    // Log the game and user data
+    console.log('Current game:', this.currentGame);
+    console.log('Current user:', this.currentUser);
+
+    // Check if game and user exist
+    if (!this.currentGame) {
+      console.log('Game data is missing!');
+      console.groupEnd();
+      return false;
+    }
+
+    if (!this.currentUser) {
+      console.log('User data is missing!');
+      console.groupEnd();
+      return false;
+    }
+
+    // Log the creator data
+    console.log('Creator data:', this.currentGame.creator);
+
+    if (!this.currentGame.creator) {
+      console.log('Creator data is missing!');
+      console.groupEnd();
+      return false;
+    }
+
+    // Extract creator ID with detailed debugging
+    let creatorId = null;
+
+    if (this.currentGame.creator.user) {
+      console.log('Creator user field exists');
+      console.log('Creator user type:', typeof this.currentGame.creator.user);
+      console.log('Creator user value:', this.currentGame.creator.user);
+
+      if (typeof this.currentGame.creator.user === 'object' && this.currentGame.creator.user !== null) {
+        console.log('Creator user is an object');
+
+        if (this.currentGame.creator.user.$oid) {
+          console.log('Found $oid structure:', this.currentGame.creator.user.$oid);
+          creatorId = this.currentGame.creator.user.$oid;
+        } else if (typeof this.currentGame.creator.user.toString === 'function') {
+          console.log('Using toString() method');
+          creatorId = this.currentGame.creator.user.toString();
+        } else {
+          console.log('Using JSON.stringify');
+          creatorId = JSON.stringify(this.currentGame.creator.user);
+        }
+      } else {
+        console.log('Creator user is not an object, using directly');
+        creatorId = String(this.currentGame.creator.user);
+      }
+    }
+
+    console.log('Extracted creator ID:', creatorId);
+
+    // Extract user ID with detailed debugging
+    let userId = null;
+
+    if (this.currentUser.id) {
+      console.log('Using currentUser.id');
+      userId = String(this.currentUser.id);
+    } else if (this.currentUser._id) {
+      console.log('Using currentUser._id');
+      if (typeof this.currentUser._id === 'object' && this.currentUser._id.$oid) {
+        userId = this.currentUser._id.$oid;
+      } else {
+        userId = String(this.currentUser._id);
+      }
+    }
+
+    console.log('Extracted user ID:', userId);
+    console.log('IDs match:', creatorId === userId);
+
+    console.groupEnd();
+
+    this.addToLog(`Creator check: ${creatorId === userId ? 'You are the creator' : 'You are NOT the creator'}`);
+
+    return creatorId === userId;
   }
-}
+};
 </script>
 
 <style scoped>
@@ -588,29 +703,6 @@ export default {
   max-width: 1200px;
   margin: 0 auto;
   padding: 20px;
-}
-
-.game-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.game-header h2 {
-  margin: 0;
-  color: #3f8c6e;
-}
-
-.game-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.btn-sm {
-  padding: 5px 10px;
-  font-size: 12px;
 }
 
 .error-message {
@@ -640,14 +732,6 @@ export default {
     "log log";
 }
 
-.game-status {
-  grid-area: status;
-  background-color: #2a2a2a;
-  padding: 15px;
-  border-radius: 8px;
-  text-align: center;
-}
-
 .game-table {
   grid-area: table;
   background-color: #1c4e38;
@@ -655,158 +739,6 @@ export default {
   padding: 20px;
   min-height: 400px;
   position: relative;
-}
-
-.community-cards {
-  text-align: center;
-  margin-bottom: 30px;
-}
-
-.community-cards h3 {
-  color: white;
-  margin-top: 0;
-  margin-bottom: 10px;
-}
-
-.cards-container {
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-}
-
-.card-display {
-  width: 60px;
-  height: 85px;
-  background-color: white;
-  color: black;
-  border-radius: 5px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 24px;
-  font-weight: bold;
-}
-
-.card-display.empty {
-  background-color: #333;
-  color: #555;
-}
-
-.card-display.card-back {
-  background-color: #2a2a2a;
-  color: #3f8c6e;
-}
-
-.players-container {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-around;
-}
-
-.player-spot {
-  width: 180px;
-  background-color: rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
-  padding: 10px;
-  margin: 10px;
-  position: relative;
-}
-
-.player-spot.current-player {
-  background-color: rgba(63, 140, 110, 0.3);
-  box-shadow: 0 0 10px rgba(63, 140, 110, 0.5);
-}
-
-.player-spot.active-turn {
-  border: 2px solid #ffcc00;
-}
-
-.player-spot.folded {
-  opacity: 0.5;
-}
-
-.player-info {
-  margin-bottom: 10px;
-}
-
-.player-name {
-  font-weight: bold;
-  font-size: 16px;
-}
-
-.player-chips {
-  font-size: 14px;
-  color: #ccc;
-}
-
-.player-status {
-  font-size: 12px;
-  color: #ff9999;
-  font-style: italic;
-}
-
-.player-hand {
-  display: flex;
-  justify-content: center;
-  gap: 5px;
-}
-
-.player-card {
-  background: white;
-}
-
-.player-actions {
-  background-color: rgba(0, 0, 0, 0.5);
-  border-radius: 8px;
-  padding: 15px;
-  margin-top: 20px;
-  text-align: center;
-}
-
-.player-actions h3 {
-  color: white;
-  margin-top: 0;
-  margin-bottom: 15px;
-}
-
-.action-buttons {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.bet-action {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-}
-
-.bet-slider {
-  width: 100%;
-  margin-top: 5px;
-}
-
-.game-log {
-  grid-area: log;
-  background-color: #2a2a2a;
-  border-radius: 8px;
-  padding: 15px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.game-log h3 {
-  margin-top: 0;
-  margin-bottom: 10px;
-  color: #3f8c6e;
-}
-
-.log-entry {
-  padding: 5px 0;
-  border-bottom: 1px solid #444;
-  font-size: 14px;
 }
 
 @media (max-width: 768px) {
@@ -817,16 +749,19 @@ export default {
       "table"
       "log";
   }
+}
 
-  .card-display {
-    width: 40px;
-    height: 60px;
-    font-size: 16px;
-  }
-
-  .player-spot {
-    width: 140px;
-    margin: 5px;
-  }
+.debug-toggle {
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 900;
 }
 </style>

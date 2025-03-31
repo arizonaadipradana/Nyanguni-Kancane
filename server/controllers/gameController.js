@@ -26,15 +26,23 @@ exports.createGame = async (req, res) => {
       return res.status(403).json({ msg: 'Creator ID does not match authenticated user' });
     }
 
+    // Find the creator user - do this first to fail early if user not found
+    const user = await User.findById(creatorId);
+    if (!user) {
+      console.log('Create game error: User not found', { creatorId });
+      return res.status(404).json({ msg: 'User not found' });
+    }
+
     // Generate a unique game ID
     let gameId;
     let isUnique = false;
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = 5; // Reduced from 10 to fail faster
     
     while (!isUnique && attempts < maxAttempts) {
       gameId = generateGameId();
-      const existingGame = await Game.findOne({ gameId });
+      // Use lean() for faster query
+      const existingGame = await Game.findOne({ gameId }).lean();
       if (!existingGame) {
         isUnique = true;
       }
@@ -45,15 +53,8 @@ exports.createGame = async (req, res) => {
       console.log('Create game error: Failed to generate unique game ID');
       return res.status(500).json({ msg: 'Failed to generate unique game ID' });
     }
-    
-    // Find the creator user
-    const user = await User.findById(creatorId);
-    if (!user) {
-      console.log('Create game error: User not found', { creatorId });
-      return res.status(404).json({ msg: 'User not found' });
-    }
 
-    // Create new game
+    // Create new game document
     const newGame = new Game({
       gameId,
       creator: {
@@ -91,6 +92,7 @@ exports.createGame = async (req, res) => {
     console.log('Saving new game:', { gameId, creatorId, creatorName });
     await newGame.save();
 
+    // Return minimal data needed
     res.json({ gameId });
   } catch (err) {
     console.error('Create game error:', err);
@@ -103,7 +105,7 @@ exports.getGame = async (req, res) => {
   try {
     const gameId = req.params.id;
     
-    // Find the game
+    // Find the game with better projection to fetch only necessary fields
     const game = await Game.findOne({ gameId });
     if (!game) {
       return res.status(404).json({ msg: 'Game not found' });
@@ -114,7 +116,7 @@ exports.getGame = async (req, res) => {
     res.json(sanitizedGame);
   } catch (err) {
     console.error('Get game error:', err.message);
-    res.status(500).send('Server error');
+    res.status(500).json({ msg: 'Server error', error: err.message });
   }
 };
 
@@ -129,29 +131,32 @@ exports.joinGame = async (req, res) => {
       return res.status(403).json({ msg: 'Player ID does not match authenticated user' });
     }
 
-    // Find the game
-    const game = await Game.findOne({ gameId });
+    // Find the game - with better projection to fetch only necessary fields
+    const game = await Game.findOne(
+      { gameId },
+      'gameId status players creator'
+    );
+    
     if (!game) {
       return res.status(404).json({ msg: 'Game not found' });
     }
 
-    // Check if game is joinable
+    // Quick validation checks
     if (game.status !== 'waiting') {
       return res.status(400).json({ msg: 'Game already started' });
     }
 
-    // Check if player is already in the game
     if (game.players.some(player => player.user.toString() === playerId)) {
-      return res.status(400).json({ msg: 'Already joined this game' });
+      // Player already joined - return success instead of error to avoid issues
+      return res.json({ success: true, alreadyJoined: true });
     }
 
-    // Check if game is full (max 8 players)
     if (game.players.length >= 8) {
       return res.status(400).json({ msg: 'Game is full' });
     }
 
-    // Find the user
-    const user = await User.findById(playerId);
+    // Find the user with minimal projection
+    const user = await User.findById(playerId, 'balance');
     if (!user) {
       return res.status(404).json({ msg: 'User not found' });
     }
@@ -176,7 +181,7 @@ exports.joinGame = async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('Join game error:', err.message);
-    res.status(500).send('Server error');
+    res.status(500).json({ msg: 'Server error', error: err.message });
   }
 };
 

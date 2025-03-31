@@ -7,20 +7,13 @@ const fs = require('fs');
 
 /**
  * @route   GET api/config
- * @desc    Get application configuration with dynamic URL support
+ * @desc    Get application configuration
  * @access  Public
  */
 router.get('/', (req, res) => {
-  // First, check if we have a ngrok URL set globally
-  const serverUrl = global.ngrokUrl || 
-                    process.env.SERVER_URL || 
-                    config.get('serverUrl') || 
-                    'http://localhost:3000';
-  
-  // Determine the client URL
-  const clientUrl = process.env.CLIENT_URL || 
-                   config.get('clientUrl') || 
-                   'http://localhost:8080';
+  // Use local URLs instead of ngrok
+  const serverUrl = 'http://localhost:3000';
+  const clientUrl = 'http://localhost:8080';
   
   // Get client origin from request headers for CORS support
   const clientOrigin = req.headers.origin || clientUrl;
@@ -43,7 +36,7 @@ router.get('/', (req, res) => {
     socketUrl: serverUrl,
     clientUrl: clientUrl,
     requestedFrom: clientOrigin,
-    isNgrok: !!global.ngrokUrl,
+    isNgrok: false,
     env: process.env.NODE_ENV || 'development',
     version: process.env.npm_package_version || '1.0.0',
     rules: rules,
@@ -61,13 +54,9 @@ router.get('/', (req, res) => {
   res.json(configData);
 });
 
-// Also add a static config endpoint for initial loading
+// Update static config file for initial loading
 const staticConfigPath = path.join(__dirname, '..', 'public', 'config.json');
 
-/**
- * Update the static config file
- * @param {Object} configData - Configuration data to write
- */
 function updateStaticConfig(configData) {
   try {
     // Ensure the public directory exists
@@ -83,15 +72,10 @@ function updateStaticConfig(configData) {
   }
 }
 
-// Update static config on server start with current settings
-const serverUrl = global.ngrokUrl || 
-                  process.env.SERVER_URL || 
-                  config.get('serverUrl') || 
-                  'http://localhost:3000';
-
+// Update static config with local settings
 updateStaticConfig({
-  apiUrl: serverUrl,
-  socketUrl: serverUrl,
+  apiUrl: 'http://localhost:3000',
+  socketUrl: 'http://localhost:3000',
   env: process.env.NODE_ENV || 'development',
   version: process.env.npm_package_version || '1.0.0',
   timestamp: new Date().toISOString()
