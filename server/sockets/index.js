@@ -14,6 +14,8 @@ module.exports = (io) => {
 
   gameIo.on('connection', (socket) => {
     console.log('New client connected to game namespace', socket.id);
+    console.log('Client handshake query:', socket.handshake.query);
+    console.log('Client handshake headers:', socket.handshake.headers);
 
     // Store user socket
     socket.on('register', ({ userId }) => {
@@ -33,7 +35,7 @@ module.exports = (io) => {
         if (!gameId || !userId || !username) {
           return socket.emit('gameError', { message: 'Missing required fields' });
         }
-
+    
         // Join the socket room for this game
         socket.join(gameId);
         socket.gameId = gameId;
@@ -44,14 +46,14 @@ module.exports = (io) => {
           gameRooms.set(gameId, new Set());
         }
         gameRooms.get(gameId).add(socket.id);
-
+    
         // Find the game
         const game = await Game.findOne({ gameId });
         if (!game) {
           socket.emit('gameError', { message: 'Game not found' });
           return;
         }
-
+    
         // Check if player is already in the game
         const existingPlayer = game.players.find(player => player.user.toString() === userId);
         let playerAdded = false;
@@ -64,7 +66,7 @@ module.exports = (io) => {
               socket.emit('gameError', { message: 'User not found' });
               return;
             }
-
+    
             // Add the new player
             game.players.push({
               user: userId,
@@ -78,11 +80,12 @@ module.exports = (io) => {
               hasActed: false,
               isAllIn: false
             });
-
+    
             await game.save();
             playerAdded = true;
             
             // Emit a specific event when a new player joins
+            // This goes to ALL clients in the room, including the sender
             gameIo.to(gameId).emit('playerJoined', {
               userId,
               username,
@@ -95,8 +98,9 @@ module.exports = (io) => {
             return;
           }
         }
-
+    
         // Always send updated game state to all players in the room
+        // This is critical to keep everyone in sync
         const sanitizedGame = gameLogic.getSanitizedGameState(game);
         gameIo.to(gameId).emit('gameUpdate', sanitizedGame);
         
@@ -138,13 +142,16 @@ module.exports = (io) => {
           return socket.emit('gameError', { message: 'Game ID is required' });
         }
         
+        console.log(`Game update requested for ${gameId} by ${userId || 'unknown user'}`);
+        
         const game = await Game.findOne({ gameId });
         if (!game) {
           return socket.emit('gameError', { message: 'Game not found' });
         }
         
+        // Send game state to ALL clients in the room to ensure everyone is in sync
         const sanitizedGame = gameLogic.getSanitizedGameState(game);
-        socket.emit('gameUpdate', sanitizedGame);
+        gameIo.to(gameId).emit('gameUpdate', sanitizedGame);
         
         // If userId is provided, send their personal cards too
         if (userId) {

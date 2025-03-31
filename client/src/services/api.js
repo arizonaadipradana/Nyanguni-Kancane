@@ -1,3 +1,4 @@
+// client/src/services/api.js
 import axios from 'axios';
 import { loadConfig } from './config';
 
@@ -11,7 +12,8 @@ const createApiInstance = async () => {
     baseURL: `${config.apiUrl}/api`,
     headers: {
       'Content-Type': 'application/json'
-    }
+    },
+    timeout: 10000 // 10 second timeout
   });
 
   // Add a request interceptor to include auth token
@@ -41,7 +43,16 @@ const createApiInstance = async () => {
         // Optionally redirect to login
         // window.location = '/login';
       }
-      return Promise.reject(error);
+      
+      // Create a more informative error
+      const enhancedError = new Error(
+        error.response?.data?.msg || error.message || 'Unknown API error'
+      );
+      enhancedError.originalError = error;
+      enhancedError.status = error.response?.status;
+      enhancedError.data = error.response?.data;
+      
+      return Promise.reject(enhancedError);
     }
   );
 
@@ -110,5 +121,11 @@ export default {
       const api = await getApi();
       return api.get('/games/user');
     }
+  },
+  
+  // Reset the API instance (useful for testing)
+  resetInstance: () => {
+    apiInstance = null;
+    apiPromise = null;
   }
 };

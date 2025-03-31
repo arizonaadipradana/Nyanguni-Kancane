@@ -298,6 +298,12 @@ export default new Vuex.Store({
       commit('CLEAR_ERROR_MESSAGE');
       
       try {
+        // Make sure we have user data
+        if (!state.user || !state.user.id || !state.user.username) {
+          commit('SET_ERROR_MESSAGE', 'User information incomplete');
+          return { success: false, error: 'User information incomplete' };
+        }
+        
         await axios.post(`/api/games/join/${gameId}`, {
           playerId: state.user.id,
           playerName: state.user.username
@@ -325,10 +331,12 @@ export default new Vuex.Store({
         });
         
         commit('SET_CURRENT_GAME', response.data);
+        commit('SET_CURRENT_GAME_ID', gameId);
         return { success: true, game: response.data };
       } catch (error) {
-        commit('SET_ERROR_MESSAGE', 'Failed to fetch game data');
-        return { success: false, error: 'Failed to fetch game data' };
+        const errorMsg = error.response?.data?.msg || 'Failed to fetch game data';
+        commit('SET_ERROR_MESSAGE', errorMsg);
+        return { success: false, error: errorMsg };
       } finally {
         commit('SET_LOADING', false);
       }
@@ -356,16 +364,19 @@ export default new Vuex.Store({
     
     // Socket event handlers
     updateGameState({ commit }, gameState) {
+      if (!gameState) return;
+      console.log('Updating game state:', gameState);
       commit('SET_CURRENT_GAME', gameState);
     },
     
     receiveCards({ commit }, { hand }) {
+      if (!hand) return;
       commit('SET_PLAYER_HAND', hand);
-    },
+    },    
     
     yourTurn({ commit }, { options }) {
       commit('SET_YOUR_TURN', true);
-      commit('SET_AVAILABLE_ACTIONS', options);
+      commit('SET_AVAILABLE_ACTIONS', options || []);
     },
     
     endTurn({ commit }) {

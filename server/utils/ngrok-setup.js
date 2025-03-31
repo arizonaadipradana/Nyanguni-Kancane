@@ -1,12 +1,10 @@
 // server/utils/ngrok-setup.js
-// This is a utility file to handle ngrok setup and configuration
-
 const ngrok = require('ngrok');
 const fs = require('fs');
 const path = require('path');
 
 /**
- * Initialize ngrok tunnel
+ * Initialize ngrok tunnel with better error handling and configuration
  * @param {number} port - The port to expose
  * @param {Object} options - Additional options
  * @returns {Promise<string>} - The public URL
@@ -16,25 +14,25 @@ async function setupNgrok(port, options = {}) {
     // Default options
     const ngrokOptions = {
       addr: port,
+      region: 'us', // Default region
       ...options
     };
 
     // Add authtoken if available
     if (process.env.NGROK_AUTHTOKEN) {
+      console.log('Using ngrok with auth token');
       ngrokOptions.authtoken = process.env.NGROK_AUTHTOKEN;
-    }
-
-    // Configure region if specified
-    if (process.env.NGROK_REGION) {
-      ngrokOptions.region = process.env.NGROK_REGION;
+    } else {
+      console.log('Running ngrok without auth token (limited to 1 session and 2 hours)');
     }
 
     // Set up basic auth if credentials provided
     if (process.env.NGROK_USERNAME && process.env.NGROK_PASSWORD) {
       ngrokOptions.auth = `${process.env.NGROK_USERNAME}:${process.env.NGROK_PASSWORD}`;
+      console.log('ngrok basic authentication enabled');
     }
 
-    // Start ngrok
+    // Start ngrok with improved error handling
     console.log('Starting ngrok tunnel...');
     const url = await ngrok.connect(ngrokOptions);
     
@@ -48,15 +46,34 @@ async function setupNgrok(port, options = {}) {
     ================================================
     `);
 
-    // Save URL to a file for reference
+    // Save URL to a file for reference and for the client
     const infoPath = path.join(__dirname, '..', 'ngrok-info.json');
     fs.writeFileSync(infoPath, JSON.stringify({
       url,
       started: new Date().toISOString()
     }, null, 2));
 
-    // Store URL globally for other parts of the application
+    // Store URL globally for other parts of the application to use
     global.ngrokUrl = url;
+    
+    // Create a config endpoint file that the client can fetch
+    const configPath = path.join(__dirname, '..', 'public', 'config.json');
+    const configData = {
+      apiUrl: url,
+      socketUrl: url,
+      env: process.env.NODE_ENV || 'development',
+      version: '1.0.0',
+      timestamp: new Date().toISOString()
+    };
+    
+    // Ensure the public directory exists
+    const publicDir = path.join(__dirname, '..', 'public');
+    if (!fs.existsSync(publicDir)) {
+      fs.mkdirSync(publicDir, { recursive: true });
+    }
+    
+    fs.writeFileSync(configPath, JSON.stringify(configData, null, 2));
+    console.log('Configuration written to public/config.json for client access');
     
     return url;
   } catch (error) {
@@ -72,6 +89,7 @@ async function closeNgrok() {
   try {
     await ngrok.kill();
     console.log('Ngrok tunnel closed');
+    global.ngrokUrl = null;
   } catch (error) {
     console.error('Error closing ngrok tunnel:', error);
   }
