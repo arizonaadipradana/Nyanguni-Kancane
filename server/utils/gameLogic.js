@@ -1,5 +1,6 @@
 // server/utils/gameLogic.js
 const cardDeck = require('./cardDeck');
+const handEvaluator = require('./handEvaluator');
 const User = require('../models/User');
 
 // Game logic for Texas Hold'em
@@ -18,6 +19,7 @@ const gameLogic = {
     game.deck = cardDeck.createDeck();
     game.currentBet = 0;
     game.handNumber += 1;
+    game.bettingRound = 'preflop';
 
     // Reset player states
     game.players.forEach(player => {
@@ -25,16 +27,31 @@ const gameLogic = {
       player.chips = 0;
       player.hasFolded = false;
       player.hasActed = false;
+      player.isAllIn = false;
     });
 
-    // Rotate dealer position (small blind)
-    game.smallBlindPosition = (game.smallBlindPosition + 1) % game.players.length;
-    game.bigBlindPosition = (game.smallBlindPosition + 1) % game.players.length;
+    // Rotate dealer position (button)
+    if (game.handNumber > 1) {
+      game.dealerPosition = (game.dealerPosition + 1) % game.players.length;
+      
+      // Make sure the dealer position is on an active player
+      while (!game.players[game.dealerPosition].isActive) {
+        game.dealerPosition = (game.dealerPosition + 1) % game.players.length;
+      }
+    } else {
+      // First hand, dealer can be random or position 0
+      game.dealerPosition = 0;
+    }
 
-    // Deal two cards to each player
+    // Set blinds positions (relative to dealer)
+    this.setBlindPositions(game);
+
+    // Deal two cards to each active player
     for (let i = 0; i < 2; i++) {
       game.players.forEach(player => {
-        player.hand.push(cardDeck.drawCard(game.deck));
+        if (player.isActive && player.totalChips > 0) {
+          player.hand.push(cardDeck.drawCard(game.deck));
+        }
       });
     }
 
@@ -42,35 +59,108 @@ const gameLogic = {
     const smallBlindPlayer = game.players[game.smallBlindPosition];
     const bigBlindPlayer = game.players[game.bigBlindPosition];
 
-    // Small blind is 0.5 chips, big blind is 1 chip
-    await this.placeBet(game, smallBlindPlayer.user.toString(), 0.5);
-    await this.placeBet(game, bigBlindPlayer.user.toString(), 1);
+    // Small blind is half the minimum bet, big blind is the minimum bet
+    await this.placeBet(game, smallBlindPlayer.user.toString(), game.minBet / 2);
+    await this.placeBet(game, bigBlindPlayer.user.toString(), game.minBet);
 
     // Set first player to act (after big blind)
-    game.currentTurn = game.players[(game.bigBlindPosition + 1) % game.players.length].user;
+    game.currentTurn = this.getNextActivePlayerAfter(game, game.bigBlindPosition);
+
+    // Update game history
+    game.actionHistory.push({
+      player: smallBlindPlayer.username,
+      action: 'smallBlind',
+      amount: game.minBet / 2,
+      timestamp: Date.now()
+    });
+    
+    game.actionHistory.push({
+      player: bigBlindPlayer.username,
+      action: 'bigBlind',
+      amount: game.minBet,
+      timestamp: Date.now()
+    });
 
     // Save the updated game
     await game.save();
     return game;
   },
 
+  // Set the small and big blind positions relative to the dealer
+  setBlindPositions(game) {
+    const activePlayers = game.players.filter(p => p.isActive && p.totalChips > 0);
+    
+    if (activePlayers.length <= 1) {
+      // Not enough players to play
+      throw new Error('Need at least 2 active players');
+    }
+    
+    // For 2 players, dealer is small blind, other player is big blind
+    if (activePlayers.length === 2) {
+      game.smallBlindPosition = game.dealerPosition;
+      game.bigBlindPosition = this.getNextActivePlayerIndex(game, game.dealerPosition);
+      return;
+    }
+    
+    // For 3+ players, small blind is next to dealer, big blind follows
+    game.smallBlindPosition = this.getNextActivePlayerIndex(game, game.dealerPosition);
+    game.bigBlindPosition = this.getNextActivePlayerIndex(game, game.smallBlindPosition);
+  },
+
+  // Get the next active player index
+  getNextActivePlayerIndex(game, currentIndex) {
+    let nextIndex = (currentIndex + 1) % game.players.length;
+    
+    // Skip players who are not active or have no chips
+    while (!game.players[nextIndex].isActive || game.players[nextIndex].totalChips <= 0) {
+      nextIndex = (nextIndex + 1) % game.players.length;
+      
+      // Safety check to avoid infinite loop
+      if (nextIndex === currentIndex) {
+        throw new Error('No active players with chips found');
+      }
+    }
+    
+    return nextIndex;
+  },
+
+  // Get the next active player ID after a position
+  getNextActivePlayerAfter(game, currentIndex) {
+    const nextIndex = this.getNextActivePlayerIndex(game, currentIndex);
+    return game.players[nextIndex].user;
+  },
+
   // Start a betting round
   async startBettingRound(game) {
     // Reset player actions
     game.players.forEach(player => {
-      if (!player.hasFolded) {
+      if (!player.hasFolded && player.isActive && !player.isAllIn) {
         player.hasActed = false;
       }
     });
 
-    // Small blind acts first in subsequent rounds (after pre-flop)
-    if (game.communityCards.length > 0) {
-      game.currentTurn = game.players[game.smallBlindPosition].user;
-      
-      // Skip players who have folded
-      while (this.getPlayerById(game, game.currentTurn.toString()).hasFolded) {
-        this.moveToNextPlayer(game);
-      }
+    // Reset current bet for new round (except preflop where blinds set it)
+    if (game.bettingRound !== 'preflop') {
+      game.currentBet = 0;
+    }
+
+    // First to act depends on the round
+    // In preflop, action starts after the big blind
+    // In other rounds, action starts with first active player after dealer
+    let startPos;
+    if (game.bettingRound === 'preflop') {
+      startPos = game.bigBlindPosition;
+    } else {
+      startPos = game.dealerPosition;
+    }
+
+    // Find the next active player who hasn't folded and isn't all-in
+    try {
+      game.currentTurn = this.getNextPlayerToAct(game, startPos);
+    } catch (error) {
+      // If no player needs to act, betting round is complete
+      console.log('No players need to act, betting round complete');
+      return game;
     }
 
     // Save the updated game
@@ -78,35 +168,66 @@ const gameLogic = {
     return game;
   },
 
+  // Get the next player who needs to act (not folded, not all-in, not already acted)
+  getNextPlayerToAct(game, startPos) {
+    let currentIndex = startPos;
+    
+    for (let i = 0; i < game.players.length; i++) {
+      const nextIndex = (currentIndex + 1) % game.players.length;
+      const player = game.players[nextIndex];
+      
+      if (player.isActive && !player.hasFolded && !player.isAllIn && !player.hasActed) {
+        return player.user;
+      }
+      
+      currentIndex = nextIndex;
+    }
+    
+    throw new Error('No players need to act');
+  },
+
   // Process a player's action
-  async processPlayerAction(game, playerId, action, amount) {
+  async processPlayerAction(game, playerId, action, amount = 0) {
     const player = this.getPlayerById(game, playerId);
     const result = {
+      success: true,
       roundEnded: false,
       handEnded: false,
-      nextPhase: null
+      nextPhase: null,
+      message: ''
     };
 
+    // Validate that it's this player's turn
+    if (game.currentTurn.toString() !== playerId) {
+      throw new Error('Not your turn');
+    }
+
+    // Process the action
     switch (action) {
       case 'fold':
         player.hasFolded = true;
         player.hasActed = true;
         
+        // Add to action history
+        game.actionHistory.push({
+          player: player.username,
+          action: 'fold',
+          amount: 0,
+          timestamp: Date.now()
+        });
+        
         // Check if only one player remains
-        const activePlayers = game.players.filter(p => !p.hasFolded);
+        const activePlayers = game.players.filter(p => p.isActive && !p.hasFolded);
         if (activePlayers.length === 1) {
           // Hand ends, remaining player wins
           result.handEnded = true;
           result.roundEnded = true;
-          result.winners = [activePlayers[0].user];
+          result.winners = [activePlayers[0].user.toString()];
           
           // Award pot to winner
-          activePlayers[0].totalChips += game.pot;
+          await this.awardPot(game, [activePlayers[0]]);
           
-          // Update user's balance
-          await this.updateUserBalance(activePlayers[0].user.toString(), activePlayers[0].totalChips);
-          
-          await game.save();
+          result.message = `${activePlayers[0].username} wins the pot of ${game.pot} chips`;
           return result;
         }
         break;
@@ -117,15 +238,36 @@ const gameLogic = {
           throw new Error('Cannot check, must call or fold');
         }
         player.hasActed = true;
+        
+        // Add to action history
+        game.actionHistory.push({
+          player: player.username,
+          action: 'check',
+          amount: 0,
+          timestamp: Date.now()
+        });
         break;
         
       case 'call':
         // Match the current bet
         const callAmount = game.currentBet - player.chips;
         if (callAmount > 0) {
-          await this.placeBet(game, playerId, callAmount);
+          if (callAmount >= player.totalChips) {
+            // Player is going all-in with a call
+            await this.placeAllIn(game, playerId);
+          } else {
+            await this.placeBet(game, playerId, callAmount);
+          }
         }
         player.hasActed = true;
+        
+        // Add to action history
+        game.actionHistory.push({
+          player: player.username,
+          action: 'call',
+          amount: callAmount,
+          timestamp: Date.now()
+        });
         break;
         
       case 'bet':
@@ -133,17 +275,32 @@ const gameLogic = {
         if (game.currentBet > 0) {
           throw new Error('Cannot bet, must raise instead');
         }
+        
         if (amount < game.minBet) {
           throw new Error(`Bet must be at least ${game.minBet} chips`);
         }
-        await this.placeBet(game, playerId, amount);
+        
+        if (amount >= player.totalChips) {
+          // Player is going all-in with a bet
+          await this.placeAllIn(game, playerId);
+        } else {
+          await this.placeBet(game, playerId, amount);
+        }
         player.hasActed = true;
         
         // Reset other players' acted status since they need to respond to the bet
         game.players.forEach(p => {
-          if (p.user.toString() !== playerId && !p.hasFolded) {
+          if (p.user.toString() !== playerId && p.isActive && !p.hasFolded && !p.isAllIn) {
             p.hasActed = false;
           }
+        });
+        
+        // Add to action history
+        game.actionHistory.push({
+          player: player.username,
+          action: 'bet',
+          amount: amount,
+          timestamp: Date.now()
         });
         break;
         
@@ -152,20 +309,58 @@ const gameLogic = {
         if (game.currentBet === 0) {
           throw new Error('Cannot raise, must bet instead');
         }
-        if (amount < game.currentBet * 2) {
-          throw new Error(`Raise must be at least ${game.currentBet * 2} chips`);
+        
+        // Minimum raise is current bet + previous raise amount (or min bet if first raise)
+        const minRaise = game.currentBet * 2;
+        if (amount < minRaise) {
+          throw new Error(`Raise must be at least ${minRaise} chips`);
         }
         
-        // First match the current bet, then add the raise
-        const raiseAmount = amount - player.chips;
-        await this.placeBet(game, playerId, raiseAmount);
+        if (amount >= player.totalChips + player.chips) {
+          // Player is going all-in with a raise
+          await this.placeAllIn(game, playerId);
+        } else {
+          // Calculate additional amount to add to player's current bet
+          const additionalAmount = amount - player.chips;
+          await this.placeBet(game, playerId, additionalAmount);
+        }
         player.hasActed = true;
         
         // Reset other players' acted status since they need to respond to the raise
         game.players.forEach(p => {
-          if (p.user.toString() !== playerId && !p.hasFolded) {
+          if (p.user.toString() !== playerId && p.isActive && !p.hasFolded && !p.isAllIn) {
             p.hasActed = false;
           }
+        });
+        
+        // Add to action history
+        game.actionHistory.push({
+          player: player.username,
+          action: 'raise',
+          amount: amount,
+          timestamp: Date.now()
+        });
+        break;
+        
+      case 'allIn':
+        await this.placeAllIn(game, playerId);
+        player.hasActed = true;
+        
+        // If player's all-in amount is greater than current bet, reset other players' acted status
+        if (player.chips > game.currentBet) {
+          game.players.forEach(p => {
+            if (p.user.toString() !== playerId && p.isActive && !p.hasFolded && !p.isAllIn) {
+              p.hasActed = false;
+            }
+          });
+        }
+        
+        // Add to action history
+        game.actionHistory.push({
+          player: player.username,
+          action: 'allIn',
+          amount: player.chips,
+          timestamp: Date.now()
         });
         break;
         
@@ -173,22 +368,25 @@ const gameLogic = {
         throw new Error('Invalid action');
     }
 
-    // Move to next player
-    this.moveToNextPlayer(game);
-    
-    // Check if betting round is complete
-    if (this.isBettingRoundComplete(game)) {
-      result.roundEnded = true;
-      
-      // Determine the next phase
-      if (game.communityCards.length === 0) {
-        result.nextPhase = 'flop';
-      } else if (game.communityCards.length === 3) {
-        result.nextPhase = 'turn';
-      } else if (game.communityCards.length === 4) {
-        result.nextPhase = 'river';
-      } else {
-        result.nextPhase = 'showdown';
+    // Move to next player if hand is still active
+    if (!result.handEnded) {
+      try {
+        game.currentTurn = this.getNextPlayerToAct(game, game.players.findIndex(p => 
+          p.user.toString() === playerId));
+      } catch (error) {
+        // If no more players need to act, betting round is complete
+        result.roundEnded = true;
+        
+        // Determine the next phase based on current betting round
+        if (game.bettingRound === 'preflop') {
+          result.nextPhase = 'flop';
+        } else if (game.bettingRound === 'flop') {
+          result.nextPhase = 'turn';
+        } else if (game.bettingRound === 'turn') {
+          result.nextPhase = 'river';
+        } else if (game.bettingRound === 'river') {
+          result.nextPhase = 'showdown';
+        }
       }
     }
     
@@ -216,141 +414,61 @@ const gameLogic = {
     await game.save();
   },
   
-  // Move to the next active player
-  moveToNextPlayer(game) {
-    const currentIndex = game.players.findIndex(p => p.user.toString() === game.currentTurn.toString());
-    let nextIndex = (currentIndex + 1) % game.players.length;
+  // Place an all-in bet
+  async placeAllIn(game, playerId) {
+    const player = this.getPlayerById(game, playerId);
     
-    // Skip players who have folded or already acted
-    while (
-      (game.players[nextIndex].hasFolded || game.players[nextIndex].hasActed) &&
-      nextIndex !== currentIndex
-    ) {
-      nextIndex = (nextIndex + 1) % game.players.length;
+    // Put all remaining chips in the pot
+    const allInAmount = player.totalChips;
+    if (allInAmount <= 0) {
+      throw new Error('No chips left to go all-in');
     }
     
-    // If we've looped back to the current player, all players have acted
-    if (nextIndex === currentIndex) {
-      // All players have acted, betting round is complete
-      return;
-    }
+    // Update player chips
+    player.totalChips = 0;
+    player.chips += allInAmount;
+    player.isAllIn = true;
     
-    game.currentTurn = game.players[nextIndex].user;
-  },
-  
-  // Check if betting round is complete
-  isBettingRoundComplete(game) {
-    // All active players should have the same amount of chips in the pot,
-    // or have folded, and all should have acted
-    const activePlayers = game.players.filter(p => !p.hasFolded);
-    
-    // If only one player remains, round is complete
-    if (activePlayers.length === 1) {
-      return true;
-    }
-    
-    // Check if all active players have acted and have matched the bet
-    return activePlayers.every(p => 
-      p.hasActed && (p.chips === game.currentBet || p.totalChips === 0)
-    );
-  },
-  
-  // Deal the flop (first three community cards)
-  async dealFlop(game) {
-    // Burn a card
-    cardDeck.drawCard(game.deck);
-    
-    // Deal three cards
-    for (let i = 0; i < 3; i++) {
-      game.communityCards.push(cardDeck.drawCard(game.deck));
+    // Update pot and possibly current bet
+    game.pot += allInAmount;
+    if (player.chips > game.currentBet) {
+      game.currentBet = player.chips;
     }
     
     await game.save();
-    return game;
   },
   
-  // Deal the turn (fourth community card)
-  async dealTurn(game) {
-    // Burn a card
-    cardDeck.drawCard(game.deck);
+  // Award the pot to winner(s)
+  async awardPot(game, winners) {
+    if (!winners || winners.length === 0) {
+      throw new Error('No winners provided');
+    }
     
-    // Deal one card
-    game.communityCards.push(cardDeck.drawCard(game.deck));
+    // Split the pot evenly among winners
+    const splitAmount = Math.floor(game.pot / winners.length);
+    const remainder = game.pot % winners.length;
     
-    await game.save();
-    return game;
-  },
-  
-  // Deal the river (fifth community card)
-  async dealRiver(game) {
-    // Burn a card
-    cardDeck.drawCard(game.deck);
-    
-    // Deal one card
-    game.communityCards.push(cardDeck.drawCard(game.deck));
-    
-    await game.save();
-    return game;
-  },
-  
-  // Process the showdown (compare hands)
-  async processShowdown(game) {
-    const activePlayers = game.players.filter(p => !p.hasFolded);
-    const result = {
-      winners: []
-    };
-    
-    // Evaluate each player's hand
-    const handsWithRanks = activePlayers.map(player => {
-      const allCards = [...player.hand, ...game.communityCards];
-      const handRank = this.evaluateHand(allCards);
-      // Store hand name for history
-      player.handName = handRank.handName;
-      return {
-        playerId: player.user,
-        handRank
-      };
-    });
-    
-    // Find the highest rank
-    const maxRank = Math.max(...handsWithRanks.map(h => h.handRank.rank));
-    
-    // Find all players with the highest rank
-    const winners = handsWithRanks.filter(h => h.handRank.rank === maxRank);
-    
-    // In case of a tie, use kickers to determine winner
-    if (winners.length > 1) {
-      // For simplicity, let's just split the pot evenly
-      result.winners = winners.map(w => w.playerId);
+    // Award chips to winners
+    for (let i = 0; i < winners.length; i++) {
+      const winner = winners[i];
+      let winAmount = splitAmount;
       
-      // Award split pot to winners
-      const splitAmount = Math.floor(game.pot / winners.length);
-      for (const winner of winners) {
-        const player = this.getPlayerById(game, winner.playerId.toString());
-        player.totalChips += splitAmount;
-        
-        // Update user's balance in database
-        await this.updateUserBalance(winner.playerId.toString(), player.totalChips);
-        
-        // Update games won count
-        await this.updateGamesWon(winner.playerId.toString());
+      // Add remainder to first winner (if any)
+      if (i === 0) {
+        winAmount += remainder;
       }
-    } else {
-      result.winners = [winners[0].playerId];
       
-      // Award pot to winner
-      const winner = this.getPlayerById(game, winners[0].playerId.toString());
-      winner.totalChips += game.pot;
+      winner.totalChips += winAmount;
       
       // Update user's balance in database
-      await this.updateUserBalance(winners[0].playerId.toString(), winner.totalChips);
+      await this.updateUserBalance(winner.user.toString(), winner.totalChips);
       
-      // Update games won count
-      await this.updateGamesWon(winners[0].playerId.toString());
+      // Update games won count for the user
+      await this.updateGamesWon(winner.user.toString());
     }
     
-    await game.save();
-    return result;
+    // Reset pot
+    game.pot = 0;
   },
   
   // Update user balance in database
@@ -373,34 +491,190 @@ const gameLogic = {
     }
   },
   
-  // Evaluate a poker hand
-  evaluateHand(cards) {
-    // This is a simplified hand evaluator
-    // In a real implementation, you would use a more sophisticated algorithm
+  // Deal the flop (first three community cards)
+  async dealFlop(game) {
+    // Update betting round
+    game.bettingRound = 'flop';
     
-    // For simplicity, let's just return a random rank
-    // In reality, you'd evaluate the hand properly
+    // Burn a card
+    cardDeck.drawCard(game.deck);
+    
+    // Deal three cards
+    for (let i = 0; i < 3; i++) {
+      game.communityCards.push(cardDeck.drawCard(game.deck));
+    }
+    
+    // Add to game history
+    game.actionHistory.push({
+      player: 'Dealer',
+      action: 'dealFlop',
+      timestamp: Date.now()
+    });
+    
+    await game.save();
+    return game;
+  },
+  
+  // Deal the turn (fourth community card)
+  async dealTurn(game) {
+    // Update betting round
+    game.bettingRound = 'turn';
+    
+    // Burn a card
+    cardDeck.drawCard(game.deck);
+    
+    // Deal one card
+    game.communityCards.push(cardDeck.drawCard(game.deck));
+    
+    // Add to game history
+    game.actionHistory.push({
+      player: 'Dealer',
+      action: 'dealTurn',
+      timestamp: Date.now()
+    });
+    
+    await game.save();
+    return game;
+  },
+  
+  // Deal the river (fifth community card)
+  async dealRiver(game) {
+    // Update betting round
+    game.bettingRound = 'river';
+    
+    // Burn a card
+    cardDeck.drawCard(game.deck);
+    
+    // Deal one card
+    game.communityCards.push(cardDeck.drawCard(game.deck));
+    
+    // Add to game history
+    game.actionHistory.push({
+      player: 'Dealer',
+      action: 'dealRiver',
+      timestamp: Date.now()
+    });
+    
+    await game.save();
+    return game;
+  },
+  
+  // Process the showdown (compare hands)
+  async processShowdown(game) {
+    // Get players who haven't folded
+    const activePlayers = game.players.filter(p => p.isActive && !p.hasFolded);
+    
+    // Prepare hands for evaluation
+    const playerHands = activePlayers.map(player => ({
+      playerId: player.user.toString(),
+      username: player.username,
+      holeCards: player.hand,
+      communityCards: game.communityCards
+    }));
+    
+    // Determine winner(s)
+    const result = handEvaluator.determineWinners(playerHands);
+    
+    // Store hand results in game history
+    game.handResults.push({
+      winners: result.winners.map(w => w.playerId),
+      pot: game.pot,
+      hands: result.allHands.map(h => ({
+        player: h.username,
+        cards: h.hand,
+        handName: h.handName
+      })),
+      communityCards: game.communityCards,
+      timestamp: Date.now()
+    });
+    
+    // Award pot to winner(s)
+    const winnerPlayers = result.winners.map(w => 
+      this.getPlayerById(game, w.playerId)
+    );
+    
+    await this.awardPot(game, winnerPlayers);
+    
     return {
-      rank: Math.floor(Math.random() * 9),
-      handName: this.getHandName(Math.floor(Math.random() * 9))
+      winners: result.winners.map(w => ({
+        playerId: w.playerId,
+        username: w.username,
+        handName: w.handName
+      })),
+      hands: result.allHands.map(h => ({
+        playerId: h.playerId,
+        username: h.username,
+        handName: h.handName
+      }))
     };
   },
   
-  // Get hand name from rank
-  getHandName(rank) {
-    const handNames = [
-      'High Card',
-      'One Pair',
-      'Two Pair',
-      'Three of a Kind',
-      'Straight',
-      'Flush',
-      'Full House',
-      'Four of a Kind',
-      'Straight Flush',
-      'Royal Flush'
-    ];
-    return handNames[rank];
+  // Check if betting round is complete
+  isBettingRoundComplete(game) {
+    // All active players should have either folded, gone all-in, or acted
+    // And all players who have acted should have the same amount in the pot
+    const activePlayers = game.players.filter(p => p.isActive && !p.hasFolded && !p.isAllIn);
+    
+    // If no active players (all folded or all-in), round is complete
+    if (activePlayers.length === 0) {
+      return true;
+    }
+    
+    // Check if all active players have acted
+    const allActed = activePlayers.every(p => p.hasActed);
+    if (!allActed) {
+      return false;
+    }
+    
+    // All players have acted, now check if they've all matched the bet
+    return activePlayers.every(p => p.chips === game.currentBet);
+  },
+  
+  // Prepare the game for the next hand
+  async prepareNextHand(game) {
+    // Reset necessary game state
+    game.bettingRound = 'preflop';
+    game.pot = 0;
+    game.currentBet = 0;
+    game.communityCards = [];
+    
+    // Reset player states but keep their total chips
+    game.players.forEach(player => {
+      player.hand = [];
+      player.chips = 0;
+      player.hasFolded = false;
+      player.hasActed = false;
+      player.isAllIn = false;
+    });
+    
+    // Remove players with zero chips
+    game.players = game.players.filter(player => {
+      if (player.totalChips <= 0) {
+        player.isActive = false;
+        return false;
+      }
+      return true;
+    });
+    
+    // Check if there are enough players to continue
+    if (game.players.filter(p => p.isActive).length < 2) {
+      game.status = 'completed';
+      game.actionHistory.push({
+        player: 'System',
+        action: 'gameCompleted',
+        timestamp: Date.now()
+      });
+    } else {
+      // Continue with next hand
+      game.actionHistory.push({
+        player: 'System',
+        action: 'nextHand',
+        timestamp: Date.now()
+      });
+    }
+    
+    await game.save();
+    return game;
   },
   
   // Get player by ID
@@ -414,8 +688,13 @@ const gameLogic = {
   
   // Get available options for a player
   getPlayerOptions(game, playerId) {
-    const player = this.getPlayerById(game, playerId.toString());
+    const player = this.getPlayerById(game, playerId);
     const options = [];
+    
+    // Player can't act if they've folded or are all-in
+    if (player.hasFolded || player.isAllIn) {
+      return options;
+    }
     
     // Always can fold
     options.push('fold');
@@ -436,8 +715,13 @@ const gameLogic = {
     }
     
     // Raise option
-    if (game.currentBet > 0 && player.totalChips > 0) {
+    if (game.currentBet > 0 && player.totalChips > game.currentBet - player.chips) {
       options.push('raise');
+    }
+    
+    // All-in option is always available if player has chips
+    if (player.totalChips > 0) {
+      options.push('allIn');
     }
     
     return options;
@@ -452,6 +736,10 @@ const gameLogic = {
       communityCards: game.communityCards,
       currentTurn: game.currentTurn,
       currentBet: game.currentBet,
+      dealerPosition: game.dealerPosition,
+      smallBlindPosition: game.smallBlindPosition,
+      bigBlindPosition: game.bigBlindPosition,
+      bettingRound: game.bettingRound,
       players: game.players.map(player => ({
         id: player.user.toString(),
         username: player.username,
@@ -459,9 +747,85 @@ const gameLogic = {
         totalChips: player.totalChips,
         hasCards: player.hand.length > 0,
         hasFolded: player.hasFolded,
-        hasActed: player.hasActed
-      }))
+        hasActed: player.hasActed,
+        isAllIn: player.isAllIn,
+        isActive: player.isActive,
+        position: player.position
+      })),
+      actionHistory: game.actionHistory.slice(-10) // Last 10 actions
     };
+  },
+  
+  // Process a full hand from start to finish
+  async processFullHand(game) {
+    // 1. Start new hand (already dealt cards and set blinds)
+    await this.startNewHand(game);
+    
+    // Keep track of remaining players
+    let activePlayers = game.players.filter(p => p.isActive && !p.hasFolded);
+    
+    // If only one player remains active after blinds, they win automatically
+    if (activePlayers.length === 1) {
+      await this.awardPot(game, activePlayers);
+      return this.prepareNextHand(game);
+    }
+    
+    // 2. Pre-flop betting round
+    await this.startBettingRound(game);
+    
+    // Continue through betting rounds until showdown or winner determined
+    let currentRound = 'preflop';
+    const rounds = ['preflop', 'flop', 'turn', 'river', 'showdown'];
+    
+    // Proceed through rounds until showdown or only one player remains
+    for (let i = 0; i < rounds.length; i++) {
+      currentRound = rounds[i];
+      
+      // Skip betting if only one player remains
+      activePlayers = game.players.filter(p => p.isActive && !p.hasFolded);
+      if (activePlayers.length === 1) {
+        await this.awardPot(game, activePlayers);
+        return this.prepareNextHand(game);
+      }
+      
+      // Skip to showdown if all players are all-in
+      const notAllInPlayers = activePlayers.filter(p => !p.isAllIn);
+      if (notAllInPlayers.length === 0 && currentRound !== 'showdown') {
+        // Deal remaining community cards and proceed to showdown
+        if (game.communityCards.length === 0) {
+          await this.dealFlop(game);
+          await this.dealTurn(game);
+          await this.dealRiver(game);
+        } else if (game.communityCards.length === 3) {
+          await this.dealTurn(game);
+          await this.dealRiver(game);
+        } else if (game.communityCards.length === 4) {
+          await this.dealRiver(game);
+        }
+        
+        // Process showdown
+        await this.processShowdown(game);
+        return this.prepareNextHand(game);
+      }
+      
+      // Process the current round
+      if (currentRound === 'flop') {
+        await this.dealFlop(game);
+        await this.startBettingRound(game);
+      } else if (currentRound === 'turn') {
+        await this.dealTurn(game);
+        await this.startBettingRound(game);
+      } else if (currentRound === 'river') {
+        await this.dealRiver(game);
+        await this.startBettingRound(game);
+      } else if (currentRound === 'showdown') {
+        await this.processShowdown(game);
+        return this.prepareNextHand(game);
+      }
+    }
+    
+    // Should never reach here, but just in case
+    return game;
   }
 };
 

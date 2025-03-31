@@ -13,12 +13,16 @@ module.exports = function(req, res, next) {
 
   try {
     // Verify token
-    const decoded = jwt.verify(token, config.get('jwtSecret'));
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || config.get('jwtSecret'));
 
     // Add user from payload to request
     req.user = decoded.user;
     next();
   } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ msg: 'Token has expired' });
+    }
+    
     res.status(401).json({ msg: 'Token is not valid' });
   }
 };

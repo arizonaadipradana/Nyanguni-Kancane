@@ -2,15 +2,14 @@
 const crypto = require('crypto');
 const Game = require('../models/Game');
 const User = require('../models/User');
+const gameLogic = require('../utils/gameLogic');
 
 // Generate a random 6-character game ID
 const generateGameId = () => {
   return crypto.randomBytes(3).toString('hex');
 };
 
-// @desc    Create a new game
-// @route   POST /api/games
-// @access  Private
+// Create a new game
 exports.createGame = async (req, res) => {
   try {
     const { creatorId, creatorName } = req.body;
@@ -66,20 +65,26 @@ exports.createGame = async (req, res) => {
         username: creatorName,
         position: 0,
         chips: 0,
-        totalChips: user.balance > 1000 ? 1000 : user.balance,
+        totalChips: Math.min(user.balance, 1000),
         hand: [],
         isActive: true,
         hasFolded: false,
-        hasActed: false
+        hasActed: false,
+        isAllIn: false
       }],
       status: 'waiting',
       pot: 0,
       deck: [],
       communityCards: [],
+      dealerPosition: 0,
       smallBlindPosition: 0,
       bigBlindPosition: 1,
       currentBet: 0,
-      minBet: 1
+      minBet: 1, // 1 chip = 500 rupiah
+      bettingRound: 'preflop',
+      handNumber: 0,
+      actionHistory: [],
+      handResults: []
     });
 
     // Save the game
@@ -93,9 +98,7 @@ exports.createGame = async (req, res) => {
   }
 };
 
-// @desc    Get a game by ID
-// @route   GET /api/games/:id
-// @access  Private
+// Get a game by ID
 exports.getGame = async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -107,27 +110,7 @@ exports.getGame = async (req, res) => {
     }
 
     // Return a sanitized version of the game (without cards)
-    const sanitizedGame = {
-      id: game.gameId,
-      creator: game.creator,
-      players: game.players.map(player => ({
-        id: player.user,
-        username: player.username,
-        chips: player.chips,
-        totalChips: player.totalChips,
-        isActive: player.isActive,
-        hasFolded: player.hasFolded,
-        hasActed: player.hasActed,
-        hasCards: player.hand.length > 0
-      })),
-      status: game.status,
-      createdAt: game.createdAt,
-      pot: game.pot,
-      communityCards: game.communityCards,
-      currentTurn: game.currentTurn,
-      currentBet: game.currentBet
-    };
-
+    const sanitizedGame = gameLogic.getSanitizedGameState(game);
     res.json(sanitizedGame);
   } catch (err) {
     console.error('Get game error:', err.message);
@@ -135,13 +118,16 @@ exports.getGame = async (req, res) => {
   }
 };
 
-// @desc    Join a game
-// @route   POST /api/games/join/:id
-// @access  Private
+// Join a game
 exports.joinGame = async (req, res) => {
   try {
     const gameId = req.params.id;
     const { playerId, playerName } = req.body;
+
+    // Ensure the player ID matches the authenticated user
+    if (playerId !== req.user.id) {
+      return res.status(403).json({ msg: 'Player ID does not match authenticated user' });
+    }
 
     // Find the game
     const game = await Game.findOne({ gameId });
@@ -176,11 +162,12 @@ exports.joinGame = async (req, res) => {
       username: playerName,
       position: game.players.length,
       chips: 0,
-      totalChips: user.balance > 1000 ? 1000 : user.balance,
+      totalChips: Math.min(user.balance, 1000), // Cap at 1000 chips
       hand: [],
       isActive: true,
       hasFolded: false,
-      hasActed: false
+      hasActed: false,
+      isAllIn: false
     });
 
     // Save the updated game
@@ -193,13 +180,16 @@ exports.joinGame = async (req, res) => {
   }
 };
 
-// @desc    Start a game
-// @route   POST /api/games/start/:id
-// @access  Private
+// Start a game
 exports.startGame = async (req, res) => {
   try {
     const gameId = req.params.id;
     const { playerId } = req.body;
+
+    // Ensure the player ID matches the authenticated user
+    if (playerId !== req.user.id) {
+      return res.status(403).json({ msg: 'Player ID does not match authenticated user' });
+    }
 
     // Find the game
     const game = await Game.findOne({ gameId });
@@ -219,6 +209,8 @@ exports.startGame = async (req, res) => {
 
     // Update game status
     game.status = 'active';
+    game.bettingRound = 'preflop';
+    game.dealerPosition = 0; // First player is dealer for first hand
     
     // Save the updated game
     await game.save();
@@ -230,45 +222,64 @@ exports.startGame = async (req, res) => {
   }
 };
 
-// @desc    Get all active games
-// @route   GET /api/games
-// @access  Private
+// Get all active games
 exports.getActiveGames = async (req, res) => {
   try {
     // Find all active games
-    const games = await Game.find({ status: 'active' })
+    const games = await Game.find({ status: { $in: ['waiting', 'active'] } })
       .select('gameId creator players status createdAt')
       .sort({ createdAt: -1 });
       
-    res.json(games);
+    // Return a sanitized list
+    const sanitizedGames = games.map(game => ({
+      id: game.gameId,
+      creator: game.creator.username,
+      playerCount: game.players.length,
+      status: game.status,
+      createdAt: game.createdAt
+    }));
+      
+    res.json(sanitizedGames);
   } catch (err) {
     console.error('Get active games error:', err.message);
     res.status(500).send('Server error');
   }
 };
 
-// @desc    Get user's games
-// @route   GET /api/games/user
-// @access  Private
+// Get user's games
 exports.getUserGames = async (req, res) => {
   try {
     // Find games where user is a player
     const games = await Game.find({ 
       'players.user': req.user.id 
     })
-    .select('gameId creator players status createdAt')
-    .sort({ createdAt: -1 });
+    .select('gameId creator players status createdAt updatedAt');
     
-    res.json(games);
+    // Return sanitized list
+    const sanitizedGames = games.map(game => {
+      // Find the user's player object in this game
+      const player = game.players.find(p => p.user.toString() === req.user.id);
+      
+      return {
+        id: game.gameId,
+        creator: game.creator.username,
+        playerCount: game.players.length,
+        status: game.status,
+        createdAt: game.createdAt,
+        updatedAt: game.updatedAt,
+        yourChips: player ? player.totalChips : 0,
+        isCreator: game.creator.user.toString() === req.user.id
+      };
+    });
+    
+    res.json(sanitizedGames);
   } catch (err) {
     console.error('Get user games error:', err.message);
     res.status(500).send('Server error');
   }
 };
 
-// @desc    End a game
-// @route   PUT /api/games/end/:id
-// @access  Private
+// End a game
 exports.endGame = async (req, res) => {
   try {
     const gameId = req.params.id;
@@ -287,12 +298,63 @@ exports.endGame = async (req, res) => {
     // Update game status
     game.status = 'completed';
     
+    // Update player balances based on current chips
+    for (const player of game.players) {
+      // Skip inactive players
+      if (!player.isActive) continue;
+      
+      try {
+        await User.findByIdAndUpdate(player.user, {
+          $inc: { balance: player.totalChips }
+        });
+      } catch (error) {
+        console.error(`Error updating balance for player ${player.username}:`, error);
+      }
+    }
+    
     // Save the updated game
     await game.save();
     
     res.json({ success: true });
   } catch (err) {
     console.error('End game error:', err.message);
+    res.status(500).send('Server error');
+  }
+};
+
+// Get game results
+exports.getGameResults = async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    
+    // Find the game
+    const game = await Game.findOne({ gameId });
+    if (!game) {
+      return res.status(404).json({ msg: 'Game not found' });
+    }
+    
+    // Check if player is in the game
+    const isPlayerInGame = game.players.some(p => p.user.toString() === req.user.id);
+    if (!isPlayerInGame) {
+      return res.status(403).json({ msg: 'You are not a player in this game' });
+    }
+    
+    // Return game results
+    const results = {
+      gameId: game.gameId,
+      status: game.status,
+      handResults: game.handResults,
+      players: game.players.map(player => ({
+        id: player.user,
+        username: player.username,
+        finalChips: player.totalChips,
+        isActive: player.isActive
+      }))
+    };
+    
+    res.json(results);
+  } catch (err) {
+    console.error('Get game results error:', err.message);
     res.status(500).send('Server error');
   }
 };

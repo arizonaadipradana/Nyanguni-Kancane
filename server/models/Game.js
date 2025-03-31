@@ -14,6 +14,11 @@ const CardSchema = new Schema({
     enum: ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'],
     required: true
   },
+  value: {
+    type: Number,
+    min: 2,
+    max: 14
+  },
   code: {
     type: String
   }
@@ -32,7 +37,7 @@ const PlayerSchema = new Schema({
   },
   chips: {
     type: Number,
-    default: 0 // Chips committed to the pot
+    default: 0 // Chips committed to the pot in current hand
   },
   totalChips: {
     type: Number,
@@ -51,6 +56,10 @@ const PlayerSchema = new Schema({
     type: Boolean,
     default: false
   },
+  isAllIn: {
+    type: Boolean,
+    default: false
+  },
   position: {
     type: Number // Player's position at the table
   }
@@ -64,7 +73,7 @@ const ActionSchema = new Schema({
   },
   action: {
     type: String,
-    enum: ['fold', 'check', 'call', 'bet', 'raise'],
+    enum: ['fold', 'check', 'call', 'bet', 'raise', 'allIn', 'smallBlind', 'bigBlind', 'dealFlop', 'dealTurn', 'dealRiver', 'gameStarted', 'gameCompleted', 'nextHand'],
     required: true
   },
   amount: {
@@ -147,6 +156,10 @@ const GameSchema = new Schema({
     type: Schema.Types.ObjectId,
     ref: 'User'
   },
+  dealerPosition: {
+    type: Number,
+    default: 0
+  },
   smallBlindPosition: {
     type: Number,
     default: 0
@@ -162,6 +175,11 @@ const GameSchema = new Schema({
   minBet: {
     type: Number,
     default: 1 // 1 chip = 500 rupiah
+  },
+  bettingRound: {
+    type: String,
+    enum: ['preflop', 'flop', 'turn', 'river', 'showdown'],
+    default: 'preflop'
   },
   handNumber: {
     type: Number,

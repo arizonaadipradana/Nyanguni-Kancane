@@ -39,4 +39,9 @@ router.post('/start/:id', auth, gameController.startGame);
 // @access  Private
 router.put('/end/:id', auth, gameController.endGame);
 
+// @route   GET api/games/results/:id
+// @desc    Get game results
+// @access  Private
+router.get('/results/:id', auth, gameController.getGameResults);
+
 module.exports = router;

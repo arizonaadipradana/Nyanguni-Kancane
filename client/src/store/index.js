@@ -1,9 +1,10 @@
 // client/src/store/index.js
-import Vue from 'vue'
-import Vuex from 'vuex'
-import axios from 'axios'
+import Vue from 'vue';
+import Vuex from 'vuex';
+import axios from 'axios';
+import router from '../router';
 
-Vue.use(Vuex)
+Vue.use(Vuex);
 
 export default new Vuex.Store({
   state: {
@@ -14,7 +15,10 @@ export default new Vuex.Store({
     playerHand: [],
     errorMessage: '',
     isYourTurn: false,
-    availableActions: []
+    availableActions: [],
+    isLoading: false,
+    gamesList: [],
+    userGames: []
   },
   
   getters: {
@@ -25,13 +29,21 @@ export default new Vuex.Store({
     playerHand: state => state.playerHand,
     errorMessage: state => state.errorMessage,
     isYourTurn: state => state.isYourTurn,
-    availableActions: state => state.availableActions
+    availableActions: state => state.availableActions,
+    isLoading: state => state.isLoading,
+    gamesList: state => state.gamesList,
+    userGames: state => state.userGames
   },
   
   mutations: {
-    SET_TOKEN(state, token) {
-      state.token = token
+    SET_LOADING(state, isLoading) {
+      state.isLoading = isLoading;
     },
+    
+    SET_TOKEN(state, token) {
+      state.token = token;
+    },
+    
     SET_USER(state, user) {
       // Handle both id and _id (MongoDB uses _id)
       if (user._id && !user.id) {
@@ -39,36 +51,61 @@ export default new Vuex.Store({
       }
       state.user = user;
     },
+    
     CLEAR_AUTH(state) {
-      state.token = ''
-      state.user = null
+      state.token = '';
+      state.user = null;
     },
+    
     SET_CURRENT_GAME(state, game) {
-      state.currentGame = game
+      state.currentGame = game;
     },
+    
     SET_CURRENT_GAME_ID(state, gameId) {
-      state.currentGameId = gameId
+      state.currentGameId = gameId;
     },
+    
     SET_PLAYER_HAND(state, cards) {
-      state.playerHand = cards
+      state.playerHand = cards;
     },
+    
     SET_ERROR_MESSAGE(state, message) {
-      state.errorMessage = message
+      state.errorMessage = message;
     },
+    
     CLEAR_ERROR_MESSAGE(state) {
-      state.errorMessage = ''
+      state.errorMessage = '';
     },
+    
     SET_YOUR_TURN(state, isTurn) {
-      state.isYourTurn = isTurn
+      state.isYourTurn = isTurn;
     },
+    
     SET_AVAILABLE_ACTIONS(state, actions) {
-      state.availableActions = actions
+      state.availableActions = actions;
+    },
+    
+    SET_GAMES_LIST(state, games) {
+      state.gamesList = games;
+    },
+    
+    SET_USER_GAMES(state, games) {
+      state.userGames = games;
+    },
+    
+    UPDATE_USER_BALANCE(state, balance) {
+      if (state.user) {
+        state.user.balance = balance;
+      }
     }
   },
   
   actions: {
     // Authentication
     async login({ commit, dispatch }, credentials) {
+      commit('SET_LOADING', true);
+      commit('CLEAR_ERROR_MESSAGE');
+      
       try {
         const response = await axios.post('/api/auth/login', credentials);
         const { token, user } = response.data;
@@ -90,29 +127,45 @@ export default new Vuex.Store({
           return await dispatch('fetchUserData');
         }
       } catch (error) {
-        commit('SET_ERROR_MESSAGE', error.response?.data?.msg || 'Login failed');
-        return { success: false, error: error.response?.data?.msg || 'Login failed' };
-      }
-    },    
-    
-    async register({ commit, dispatch }, credentials) {
-      try {
-        const response = await axios.post('/api/auth/register', credentials)
-        const token = response.data.token
-        
-        localStorage.setItem('token', token)
-        commit('SET_TOKEN', token)
-        
-        await dispatch('fetchUserData')
-        
-        return { success: true }
-      } catch (error) {
-        commit('SET_ERROR_MESSAGE', error.response?.data?.msg || 'Registration failed')
-        return { success: false, error: error.response?.data?.msg || 'Registration failed' }
+        const errorMsg = error.response?.data?.msg || 'Login failed';
+        commit('SET_ERROR_MESSAGE', errorMsg);
+        return { success: false, error: errorMsg };
+      } finally {
+        commit('SET_LOADING', false);
       }
     },
     
-    async fetchUserData({ commit, state }) {
+    async register({ commit, dispatch }, credentials) {
+      commit('SET_LOADING', true);
+      commit('CLEAR_ERROR_MESSAGE');
+      
+      try {
+        const response = await axios.post('/api/auth/register', credentials);
+        const { token, user } = response.data;
+        
+        localStorage.setItem('token', token);
+        commit('SET_TOKEN', token);
+        
+        // If the server returns user data with the token, use it
+        if (user && user.id && user.username) {
+          commit('SET_USER', user);
+          return { success: true };
+        } else {
+          // Otherwise fetch user data
+          return await dispatch('fetchUserData');
+        }
+      } catch (error) {
+        const errorMsg = error.response?.data?.msg || 'Registration failed';
+        commit('SET_ERROR_MESSAGE', errorMsg);
+        return { success: false, error: errorMsg };
+      } finally {
+        commit('SET_LOADING', false);
+      }
+    },
+    
+    async fetchUserData({ commit, state, dispatch }) {
+      commit('SET_LOADING', true);
+      
       try {
         // Make sure we have a token
         if (!state.token) {
@@ -139,18 +192,67 @@ export default new Vuex.Store({
         return { success: true };
       } catch (error) {
         console.error('Failed to fetch user data:', error);
+        
+        // Handle token expiration
+        if (error.response && error.response.status === 401) {
+          dispatch('logout');
+          router.push('/login');
+        }
+        
         commit('SET_ERROR_MESSAGE', 'Failed to fetch user data');
         return { success: false, error: 'Failed to fetch user data' };
+      } finally {
+        commit('SET_LOADING', false);
       }
     },
     
     logout({ commit }) {
-      localStorage.removeItem('token')
-      commit('CLEAR_AUTH')
+      localStorage.removeItem('token');
+      commit('CLEAR_AUTH');
+      router.push('/login');
     },
     
     // Game management
+    async fetchGames({ commit, state }) {
+      commit('SET_LOADING', true);
+      
+      try {
+        const response = await axios.get('/api/games', {
+          headers: { 'x-auth-token': state.token }
+        });
+        
+        commit('SET_GAMES_LIST', response.data);
+        return { success: true, games: response.data };
+      } catch (error) {
+        console.error('Fetch games error:', error);
+        return { success: false, error: 'Failed to fetch games' };
+      } finally {
+        commit('SET_LOADING', false);
+      }
+    },
+    
+    async fetchUserGames({ commit, state }) {
+      commit('SET_LOADING', true);
+      
+      try {
+        const response = await axios.get('/api/games/user', {
+          headers: { 'x-auth-token': state.token }
+        });
+        
+        commit('SET_USER_GAMES', response.data);
+        return { success: true, games: response.data };
+      } catch (error) {
+        console.error('Fetch user games error:', error);
+        return { success: false, error: 'Failed to fetch your games' };
+      } finally {
+        commit('SET_LOADING', false);
+      }
+    },
+    
     async createGame({ commit, state }) {
+      commit('SET_LOADING', true);
+      commit('CLEAR_ERROR_MESSAGE');
+      
       try {
         // Make sure the user is authenticated
         if (!state.user || !state.token) {
@@ -166,9 +268,6 @@ export default new Vuex.Store({
           commit('SET_ERROR_MESSAGE', 'User information incomplete');
           return { success: false, error: 'User information incomplete' };
         }
-    
-        // Add debug logging
-        console.log('Creating game with:', { creatorId: userId, creatorName: username });
     
         const response = await axios.post('/api/games', {
           creatorId: userId,
@@ -189,90 +288,141 @@ export default new Vuex.Store({
         const errorMsg = error.response?.data?.msg || 'Failed to create game';
         commit('SET_ERROR_MESSAGE', errorMsg);
         return { success: false, error: errorMsg };
+      } finally {
+        commit('SET_LOADING', false);
       }
     },
     
     async joinGame({ commit, state }, gameId) {
+      commit('SET_LOADING', true);
+      commit('CLEAR_ERROR_MESSAGE');
+      
       try {
         await axios.post(`/api/games/join/${gameId}`, {
           playerId: state.user.id,
           playerName: state.user.username
         }, {
           headers: { 'x-auth-token': state.token }
-        })
+        });
         
-        commit('SET_CURRENT_GAME_ID', gameId)
-        return { success: true }
+        commit('SET_CURRENT_GAME_ID', gameId);
+        return { success: true };
       } catch (error) {
-        commit('SET_ERROR_MESSAGE', error.response?.data?.msg || 'Failed to join game')
-        return { success: false, error: error.response?.data?.msg || 'Failed to join game' }
+        const errorMsg = error.response?.data?.msg || 'Failed to join game';
+        commit('SET_ERROR_MESSAGE', errorMsg);
+        return { success: false, error: errorMsg };
+      } finally {
+        commit('SET_LOADING', false);
       }
     },
     
     async fetchGame({ commit, state }, gameId) {
+      commit('SET_LOADING', true);
+      
       try {
         const response = await axios.get(`/api/games/${gameId}`, {
           headers: { 'x-auth-token': state.token }
-        })
+        });
         
-        commit('SET_CURRENT_GAME', response.data)
-        return { success: true, game: response.data }
+        commit('SET_CURRENT_GAME', response.data);
+        return { success: true, game: response.data };
       } catch (error) {
-        commit('SET_ERROR_MESSAGE', 'Failed to fetch game data')
-        return { success: false, error: 'Failed to fetch game data' }
+        commit('SET_ERROR_MESSAGE', 'Failed to fetch game data');
+        return { success: false, error: 'Failed to fetch game data' };
+      } finally {
+        commit('SET_LOADING', false);
       }
     },
     
     async startGame({ commit, state }, gameId) {
+      commit('SET_LOADING', true);
+      
       try {
         await axios.post(`/api/games/start/${gameId}`, {
           playerId: state.user.id
         }, {
           headers: { 'x-auth-token': state.token }
-        })
+        });
         
-        return { success: true }
+        return { success: true };
       } catch (error) {
-        commit('SET_ERROR_MESSAGE', error.response?.data?.msg || 'Failed to start game')
-        return { success: false, error: error.response?.data?.msg || 'Failed to start game' }
+        const errorMsg = error.response?.data?.msg || 'Failed to start game';
+        commit('SET_ERROR_MESSAGE', errorMsg);
+        return { success: false, error: errorMsg };
+      } finally {
+        commit('SET_LOADING', false);
       }
     },
     
     // Socket event handlers
     updateGameState({ commit }, gameState) {
-      commit('SET_CURRENT_GAME', gameState)
+      commit('SET_CURRENT_GAME', gameState);
     },
     
     receiveCards({ commit }, { hand }) {
-      commit('SET_PLAYER_HAND', hand)
+      commit('SET_PLAYER_HAND', hand);
     },
     
     yourTurn({ commit }, { options }) {
-      commit('SET_YOUR_TURN', true)
-      commit('SET_AVAILABLE_ACTIONS', options)
+      commit('SET_YOUR_TURN', true);
+      commit('SET_AVAILABLE_ACTIONS', options);
     },
     
     endTurn({ commit }) {
-      commit('SET_YOUR_TURN', false)
-      commit('SET_AVAILABLE_ACTIONS', [])
+      commit('SET_YOUR_TURN', false);
+      commit('SET_AVAILABLE_ACTIONS', []);
     },
     
     // Player actions
     async performAction({ commit }, { action, amount }) {
       try {
-        commit('SET_YOUR_TURN', false)
-        return { success: true, action, amount }
+        commit('SET_YOUR_TURN', false);
+        return { success: true, action, amount };
       } catch (error) {
-        commit('SET_ERROR_MESSAGE', 'Failed to perform action')
-        return { success: false, error: 'Failed to perform action' }
+        commit('SET_ERROR_MESSAGE', 'Failed to perform action');
+        return { success: false, error: 'Failed to perform action' };
       }
     },
     
     clearErrorMessage({ commit }) {
-      commit('CLEAR_ERROR_MESSAGE')
+      commit('CLEAR_ERROR_MESSAGE');
+    },
+    
+    // User profile
+    async updateProfile({ commit, state }, userData) {
+      commit('SET_LOADING', true);
+      
+      try {
+        const response = await axios.put('/api/auth/profile', userData, {
+          headers: { 'x-auth-token': state.token }
+        });
+        
+        commit('SET_USER', response.data);
+        return { success: true, user: response.data };
+      } catch (error) {
+        const errorMsg = error.response?.data?.msg || 'Failed to update profile';
+        commit('SET_ERROR_MESSAGE', errorMsg);
+        return { success: false, error: errorMsg };
+      } finally {
+        commit('SET_LOADING', false);
+      }
+    },
+    
+    async fetchUserStats({ commit, state }) {
+      commit('SET_LOADING', true);
+      
+      try {
+        const response = await axios.get('/api/auth/stats', {
+          headers: { 'x-auth-token': state.token }
+        });
+        
+        return { success: true, stats: response.data };
+      } catch (error) {
+        console.error('Fetch user stats error:', error);
+        return { success: false, error: 'Failed to fetch user statistics' };
+      } finally {
+        commit('SET_LOADING', false);
+      }
     }
-  },
-  
-  modules: {
   }
-})
+});

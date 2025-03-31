@@ -24,4 +24,14 @@ router.get('/user', auth, authController.getUser);
 // @access  Private
 router.put('/balance', auth, authController.updateBalance);
 
+// @route   PUT api/auth/profile
+// @desc    Update user profile
+// @access  Private
+router.put('/profile', auth, authController.updateProfile);
+
+// @route   GET api/auth/stats
+// @desc    Get user statistics
+// @access  Private
+router.get('/stats', auth, authController.getUserStats);
+
 module.exports = router;

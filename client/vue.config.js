@@ -1,4 +1,4 @@
-// client/vue.config.js
+// vue.config.js
 module.exports = {
     devServer: {
       port: 8080,
@@ -9,5 +9,6 @@ module.exports = {
           changeOrigin: true
         }
       }
-    }
-  };
+    },
+    lintOnSave: false  // Disable linting during save
+  }
