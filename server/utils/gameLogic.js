@@ -679,10 +679,41 @@ const gameLogic = {
   
   // Get player by ID
   getPlayerById(game, playerId) {
-    const player = game.players.find(p => p.user.toString() === playerId);
+    if (!game || !game.players || !Array.isArray(game.players)) {
+      throw new Error('Invalid game object');
+    }
+    
+    if (!playerId) {
+      throw new Error('Player ID is required');
+    }
+    
+    // Convert to string for comparison
+    const playerIdStr = playerId.toString();
+    
+    // Find the player with safer comparison
+    const player = game.players.find(p => {
+      // Handle various formats of the user ID
+      if (!p || !p.user) return false;
+      
+      if (typeof p.user === 'string') {
+        return p.user === playerIdStr;
+      }
+      
+      if (typeof p.user === 'object' && p.user.$oid) {
+        return p.user.$oid === playerIdStr;
+      }
+      
+      return p.user.toString() === playerIdStr;
+    });
+    
     if (!player) {
+      // Add more diagnostic information to help debug
+      console.error(`Player not found. PlayerId: ${playerId}, Game ID: ${game.gameId}`);
+      console.error(`Available players: ${game.players.map(p => p.user?.toString()).join(', ')}`);
+      
       throw new Error('Player not found');
     }
+    
     return player;
   },
   
@@ -740,6 +771,7 @@ const gameLogic = {
       smallBlindPosition: game.smallBlindPosition,
       bigBlindPosition: game.bigBlindPosition,
       bettingRound: game.bettingRound,
+      creator: game.creator,
       players: game.players.map(player => ({
         id: player.user.toString(),
         username: player.username,

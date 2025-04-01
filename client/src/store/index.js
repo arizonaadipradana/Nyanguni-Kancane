@@ -46,9 +46,22 @@ export default new Vuex.Store({
 
     SET_USER(state, user) {
       // Handle both id and _id (MongoDB uses _id)
-      if (user._id && !user.id) {
-        user.id = user._id;
+      if (user) {
+        // Make sure we have an id property, copying from _id if needed
+        if (user._id && !user.id) {
+          user.id = user._id;
+        }
+        
+        // Also do the reverse - ensure _id exists if we have id
+        if (user.id && !user._id) {
+          user._id = user.id;
+        }
+        
+        // Ensure both are strings to make comparison easier
+        if (user.id) user.id = String(user.id);
+        if (user._id) user._id = String(user._id);
       }
+      
       state.user = user;
     },
 
@@ -256,57 +269,71 @@ export default new Vuex.Store({
     async createGame({ commit, state }) {
       commit("SET_LOADING", true);
       commit("CLEAR_ERROR_MESSAGE");
-
+    
       try {
         // Make sure the user is authenticated
         if (!state.user || !state.token) {
           commit("SET_ERROR_MESSAGE", "User not authenticated");
           return { success: false, error: "User not authenticated" };
         }
-
+    
         // Ensure we have a valid user ID and username
         const userId = state.user.id;
         const username = state.user.username;
-
+    
         if (!userId || !username) {
           commit("SET_ERROR_MESSAGE", "User information incomplete");
           return { success: false, error: "User information incomplete" };
         }
-
-        // Use Promise.race with a timeout to prevent hanging requests
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(
-            () => reject(new Error("Create game request timed out")),
-            8000
+    
+        console.log('Creating game with user ID:', userId, 'and username:', username);
+    
+        // Use a more robust approach with explicit error handling
+        try {
+          const response = await axios.post(
+            "/api/games",
+            {
+              creatorId: userId,
+              creatorName: username,
+            },
+            {
+              headers: { "x-auth-token": state.token },
+              timeout: 10000, // 10 second timeout
+            }
           );
-        });
-
-        const requestPromise = axios.post(
-          "/api/games",
-          {
-            creatorId: userId,
-            creatorName: username,
-          },
-          {
-            headers: { "x-auth-token": state.token },
+    
+          console.log('Game creation API response:', response.data);
+    
+          if (response.data && response.data.gameId) {
+            commit("SET_CURRENT_GAME_ID", response.data.gameId);
+            return { success: true, gameId: response.data.gameId };
+          } else {
+            console.error('Invalid server response format:', response.data);
+            commit("SET_ERROR_MESSAGE", "Invalid server response format");
+            return { success: false, error: "Invalid server response" };
           }
-        );
-
-        const response = await Promise.race([requestPromise, timeoutPromise]);
-
-        if (response.data && response.data.gameId) {
-          commit("SET_CURRENT_GAME_ID", response.data.gameId);
-          return { success: true, gameId: response.data.gameId };
-        } else {
-          commit("SET_ERROR_MESSAGE", "Invalid server response");
-          return { success: false, error: "Invalid server response" };
+        } catch (axiosError) {
+          console.error('Axios error during game creation:', axiosError);
+          
+          if (axiosError.response) {
+            // The server responded with an error
+            const errorMsg = axiosError.response.data?.msg || 
+                             `Server error: ${axiosError.response.status}`;
+            commit("SET_ERROR_MESSAGE", errorMsg);
+            return { success: false, error: errorMsg };
+          } else if (axiosError.request) {
+            // The request was made but no response was received
+            commit("SET_ERROR_MESSAGE", "No response from server. Check your connection.");
+            return { success: false, error: "Network error - no response" };
+          } else {
+            // Something else happened
+            commit("SET_ERROR_MESSAGE", axiosError.message || "Request setup error");
+            return { success: false, error: axiosError.message || "Unknown error" };
+          }
         }
       } catch (error) {
         console.error("Create game error:", error);
-        const errorMsg =
-          error.message === "Create game request timed out"
-            ? "Request timed out. Please try again."
-            : error.response?.data?.msg || "Failed to create game";
+        const errorMsg = error.message || "Failed to create game";
         commit("SET_ERROR_MESSAGE", errorMsg);
         return { success: false, error: errorMsg };
       } finally {
@@ -422,10 +449,56 @@ export default new Vuex.Store({
     },
 
     // Socket event handlers
-    updateGameState({ commit }, gameState) {
+    updateGameState({ commit, state }, gameState) {
       if (!gameState) return;
-      console.log("Updating game state:", gameState);
-      commit("SET_CURRENT_GAME", gameState);
+      
+      // Log detailed game state for debugging
+      console.log('Updating game state with data:', {
+        id: gameState.id,
+        status: gameState.status,
+        currentTurn: gameState.currentTurn,
+        playerCount: gameState.players?.length || 0,
+        bettingRound: gameState.bettingRound
+      });
+      
+      // Make sure important fields are present
+      const enhancedGameState = { ...gameState };
+      
+      // Force status to 'active' if players have cards but status doesn't reflect it
+      if (
+        gameState.players && 
+        gameState.players.some(p => p.hasCards) && 
+        gameState.status !== 'active'
+      ) {
+        console.log('Players have cards but game status is not active; forcing to active');
+        enhancedGameState.status = 'active';
+      }
+      
+      // Add creator info if it's missing but we previously had it
+      if (!gameState.creator && state.currentGame && state.currentGame.creator) {
+        console.log('Preserving creator info that was missing in update');
+        enhancedGameState.creator = state.currentGame.creator;
+      }
+      
+      // Commit the enhanced state
+      commit('SET_CURRENT_GAME', enhancedGameState);
+      
+      // If this update includes turn info and it's the current user's turn,
+      // make sure the isYourTurn flag is set
+      if (
+        state.user && 
+        gameState.currentTurn && 
+        gameState.currentTurn === state.user.id &&
+        !state.isYourTurn
+      ) {
+        console.log('Game state shows it is your turn, updating isYourTurn flag');
+        commit('SET_YOUR_TURN', true);
+        
+        // Derive available actions if needed
+        if (state.availableActions.length === 0) {
+          commit('SET_AVAILABLE_ACTIONS', ['fold', 'check', 'call', 'bet', 'raise']);
+        }
+      }
     },
 
     receiveCards({ commit }, { hand }) {

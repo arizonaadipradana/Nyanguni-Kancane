@@ -12,6 +12,8 @@ const generateGameId = () => {
 // Create a new game
 exports.createGame = async (req, res) => {
   try {
+    console.log('Create game request received:', req.body);
+    
     const { creatorId, creatorName } = req.body;
     
     // Validate required input
@@ -22,7 +24,11 @@ exports.createGame = async (req, res) => {
 
     // Ensure the creator ID matches the authenticated user
     if (creatorId !== req.user.id) {
-      console.log('Create game error: Creator ID mismatch', { creatorId, userId: req.user.id });
+      console.log('Create game error: Creator ID mismatch', { 
+        creatorId, 
+        userId: req.user.id,
+        requestUser: req.user
+      });
       return res.status(403).json({ msg: 'Creator ID does not match authenticated user' });
     }
 
@@ -37,11 +43,12 @@ exports.createGame = async (req, res) => {
     let gameId;
     let isUnique = false;
     let attempts = 0;
-    const maxAttempts = 5; // Reduced from 10 to fail faster
+    const maxAttempts = 5;
     
     while (!isUnique && attempts < maxAttempts) {
       gameId = generateGameId();
-      // Use lean() for faster query
+      
+      // Check if game ID is already in use
       const existingGame = await Game.findOne({ gameId }).lean();
       if (!existingGame) {
         isUnique = true;
@@ -92,10 +99,12 @@ exports.createGame = async (req, res) => {
     console.log('Saving new game:', { gameId, creatorId, creatorName });
     await newGame.save();
 
-    // Return minimal data needed
+    // Return the game ID
+    console.log('Game created successfully:', gameId);
     res.json({ gameId });
   } catch (err) {
     console.error('Create game error:', err);
+    console.error(err.stack);
     res.status(500).json({ msg: 'Server error', error: err.message });
   }
 };

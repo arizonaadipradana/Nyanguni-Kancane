@@ -16,6 +16,13 @@
       <GameStatus :currentGame="currentGame" :gameId="gameId" :isCreator="isCreator" :isStarting="isStarting"
         @startGame="handleStartGame" @getCurrentPlayerName="getCurrentPlayerName" />
 
+      <div class="game-status-wrapper">
+        <GameStatus :currentGame="currentGame" :gameId="gameId" :isCreator="isCreator" :isStarting="isStarting"
+          :gameInitialized="gameInitialized" :key="currentGame ? currentGame.status + '-' + gameInitialized : 'loading'"
+          @startGame="handleStartGame" @getCurrentPlayerName="getCurrentPlayerName"
+          @requestInitialization="requestInitialization" @requestStateUpdate="requestStateUpdate" />
+      </div>
+
       <!-- Game table -->
       <div class="game-table">
         <!-- Community cards -->
@@ -26,9 +33,9 @@
           :playerHand="playerHand" :formatCard="formatCard" />
 
         <!-- Player actions -->
-        <PlayerActions v-if="isYourTurn" :availableActions="availableActions" :currentGame="currentGame"
-          :betAmount="betAmount" :raiseAmount="raiseAmount" @updateBetAmount="betAmount = $event"
-          @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction"
+        <PlayerActions v-if="isYourTurn || shouldShowActions()" :availableActions="availableActions"
+          :currentGame="currentGame" :betAmount="betAmount" :raiseAmount="raiseAmount"
+          @updateBetAmount="betAmount = $event" @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction"
           @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
       </div>
 
@@ -40,8 +47,6 @@
     <button @click="showDebugPanel = !showDebugPanel" class="debug-toggle">
       {{ showDebugPanel ? 'Hide Debug' : 'Show Debug' }}
     </button>
-
-    <button @click="debugCreatorCheck()" class="debug-btn">Debug Creator Check</button>
 
     <!-- Debug panel -->
     <GameDebugPanel :enabled="showDebugPanel" :gameId="gameId" :currentGame="currentGame" :currentUser="currentUser"
@@ -60,7 +65,6 @@ import PlayerList from '@/components/Game/PlayerList.vue';
 import PlayerActions from '@/components/Game/PlayerActions.vue';
 import GameLog from '@/components/Game/GameLog.vue';
 import GameDebugPanel from '@/components/Game/GameDebugPanel.vue';
-import {extractMongoId } from '@/utils/idUtils';
 
 export default {
   name: 'Game',
@@ -89,7 +93,13 @@ export default {
       actionTimer: null,
       actionTimeLimit: 30,
       actionTimeRemaining: 30,
-      showDebugPanel: false
+      showDebugPanel: false,
+      explicitIsCreator: false,
+      gameInProgress: false,
+      gameInitialized: false,
+      lastLogMessage: [],
+      isYourTurnProcessed: false,
+      messageDedupeTime: 1000
     };
   },
 
@@ -105,45 +115,55 @@ export default {
 
     isCreator() {
       if (!this.currentGame || !this.currentUser) {
-        console.log('isCreator check failed: currentGame or currentUser is null');
+        console.log('isCreator check failed: missing required data');
         return false;
       }
 
-      // Log the raw creator and user data for debugging
-      console.log('Creator data:', JSON.stringify(this.currentGame.creator));
-      console.log('Current user:', JSON.stringify(this.currentUser));
-
-      // Extract creator ID
-      let creatorId = null;
-
-      // Handle MongoDB $oid structure
+      // PRIMARY METHOD: Use creator field if available
       if (this.currentGame.creator && this.currentGame.creator.user) {
+        // Extract creator ID - handle different formats
+        let creatorId = '';
         if (typeof this.currentGame.creator.user === 'object' && this.currentGame.creator.user.$oid) {
           creatorId = this.currentGame.creator.user.$oid;
+        } else if (typeof this.currentGame.creator.user === 'string') {
+          creatorId = this.currentGame.creator.user;
+        } else if (typeof this.currentGame.creator.user.toString === 'function') {
+          creatorId = this.currentGame.creator.user.toString();
         } else {
-          creatorId = extractMongoId(this.currentGame.creator.user);
+          creatorId = String(this.currentGame.creator.user);
         }
+
+        // Extract user ID
+        const userId = String(this.currentUser.id || this.currentUser._id);
+
+        console.log('Creator ID for comparison:', creatorId);
+        console.log('User ID for comparison:', userId);
+
+        return creatorId === userId;
       }
 
-      if (!creatorId) {
-        console.log('isCreator check failed: could not find creator ID');
-        return false;
+      // FALLBACK METHOD: If creator field is missing, assume the first player is the creator
+      console.log('No creator field found - using fallback method');
+
+      // Check if the current user is the first player
+      if (this.currentGame.players && this.currentGame.players.length > 0) {
+        const firstPlayer = this.currentGame.players[0];
+        const firstPlayerId = String(firstPlayer.id || firstPlayer.user || '');
+        const currentUserId = String(this.currentUser.id || this.currentUser._id || '');
+
+        console.log('First player ID:', firstPlayerId);
+        console.log('Current user ID:', currentUserId);
+        console.log('Is first player? (fallback):', firstPlayerId === currentUserId);
+
+        return firstPlayerId === currentUserId;
       }
 
-      // Extract current user ID
-      const currentUserId = extractMongoId(this.currentUser.id || this.currentUser._id);
-
-      if (!currentUserId) {
-        console.log('isCreator check failed: could not find current user ID');
-        return false;
+      if (this.explicitIsCreator) {
+        console.log('Using explicit creator status: true');
+        return true;
       }
 
-      // Log the extracted IDs for debugging
-      console.log('Extracted creator ID:', creatorId);
-      console.log('Extracted user ID:', currentUserId);
-      console.log('ID match:', creatorId === currentUserId);
-
-      return creatorId === currentUserId;
+      return false;
     }
   },
 
@@ -230,39 +250,80 @@ export default {
     async handleStartGame() {
       this.isStarting = true;
       this.addToLog('Attempting to start the game...');
+      this.clearErrorMessage();
 
       try {
         console.log('Starting game:', this.gameId);
         console.log('Current user:', this.currentUser);
+        console.log('Is creator:', this.isCreator);
         console.log('Players in game:', this.currentGame.players.length);
 
-        // First call the API to update the game status
-        const result = await this.startGame(this.gameId);
+        // Step 1: First check if game is already active
+        if (this.currentGame.status === 'active') {
+          this.addToLog('Game is already active, refreshing state...');
 
-        if (result.success) {
-          this.addToLog('Game started!');
+          // Request updated game state
+          SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
 
-          // Then emit the socket event
-          console.log('Emitting socket startGame event');
-          await SocketService.startGame(this.gameId, this.currentUser.id);
-          console.log('Socket startGame event sent successfully');
+          // Consider game started
+          this.gameInProgress = true;
+          return;
+        }
 
-          // Request a fresh game state update
+        // Step 2: Call API to update game status
+        const apiResult = await this.startGame(this.gameId);
+
+        if (apiResult.success) {
+          this.addToLog('Game started on server, initializing...');
+
+          // Immediately set gameInProgress to prevent duplicate starts
+          this.gameInProgress = true;
+
+          // Request a game state update instead of sending socket event
           setTimeout(() => {
-            this.addToLog('Requesting updated game state...');
             SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+
+            // If we don't get cards within 2 seconds, try direct socket method
+            setTimeout(() => {
+              if (this.playerHand.length === 0) {
+                console.log('No cards received yet, trying direct socket method');
+                this.triggerGameInitialize();
+              }
+            }, 2000);
           }, 500);
         } else {
-          console.error('Start game API returned error:', result.error);
-          throw new Error(result.error || 'Failed to start game');
+          // Handle API error
+          console.error('Start game API returned error:', apiResult.error);
+          throw new Error(apiResult.error || 'Failed to start game on the server');
         }
       } catch (error) {
         console.error('Error starting game:', error);
-        this.SET_ERROR_MESSAGE(error.message || 'Error starting game. Please try again.');
-        this.addToLog(`Failed to start game: ${error.message}`);
+
+        // Special handling for "already started" error - treat as success
+        if (error.message && error.message.includes('already been started')) {
+          this.addToLog('Game is already in progress, refreshing state...');
+          this.gameInProgress = true;
+
+          // Request updated game state
+          SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+        } else {
+          this.SET_ERROR_MESSAGE(error.message || 'Error starting game. Please try again.');
+          this.addToLog(`Failed to start game: ${error.message}`);
+        }
       } finally {
         this.isStarting = false;
       }
+    },
+
+    // Add this helper method
+    triggerGameInitialize() {
+      // This is a fallback method to initialize the game if the gameUpdate doesn't work
+      SocketService.gameSocket?.emit('initializeGame', {
+        gameId: this.gameId,
+        userId: this.currentUser.id
+      });
+
+      this.addToLog('Sent initialize game request');
     },
 
     handleAction(action, amount = 0) {
@@ -294,7 +355,32 @@ export default {
     },
 
     addToLog(message) {
+      // Check for duplicates within the time window
       const timestamp = new Date().toLocaleTimeString();
+      const now = Date.now();
+
+      // Don't add the exact same message within the deduplication window
+      const isDuplicate = this.lastLogMessages.some(item =>
+        item.message === message && (now - item.time < this.messageDedupeTime)
+      );
+
+      if (isDuplicate) {
+        console.log(`Suppressed duplicate log message: ${message}`);
+        return;
+      }
+
+      // Add to tracking list for deduplication
+      this.lastLogMessages.push({
+        message,
+        time: now
+      });
+
+      // Maintain the tracking list size
+      if (this.lastLogMessages.length > 10) {
+        this.lastLogMessages.shift();
+      }
+
+      // Add the message to the actual log
       this.gameLog.unshift(`[${timestamp}] ${message}`);
 
       // Keep log at reasonable size
@@ -335,6 +421,7 @@ export default {
         SocketService.on('newHand', this.handleNewHand);
         SocketService.on('gameEnded', this.handleGameEnded);
         SocketService.on('gameError', this.handleGameError);
+        SocketService.on('creatorInfo', this.handleCreatorInfo);
 
         // Request an initial game state update with retry logic
         this.requestGameState();
@@ -403,21 +490,61 @@ export default {
         return;
       }
 
+      // Force reload of players list when player count changes
+      const oldPlayerCount = this.currentGame?.players?.length || 0;
+      const newPlayerCount = gameState.players?.length || 0;
+
       this.updateGameState(gameState);
+
+      // If game is now active and we previously were waiting, do special handling
+      if (gameState.status === 'active' && !this.gameInProgress) {
+        this.gameInProgress = true;
+        this.addToLog('Game is now active!');
+        this.clearErrorMessage();
+
+        // Request initialization if we're the creator
+        if (this.isCreator && !this.gameInitialized) {
+          setTimeout(() => {
+            this.requestInitialization();
+          }, 500);
+        }
+      }
+
+      // If player count changed, we might need to force UI update
+      if (oldPlayerCount !== newPlayerCount) {
+        console.log(`Player count changed: ${oldPlayerCount} → ${newPlayerCount}`);
+        // Force component update by changing key
+        this.$forceUpdate();
+      }
 
       // Log connection status
       if (!this.isConnected) {
         this.isConnected = true;
         this.addToLog('Connected to game server');
       }
-
-      // Debugging: log player count
-      console.log(`Game has ${gameState.players?.length || 0} players`);
     },
 
     handleGameStarted(gameState) {
+      console.log('Game started event received:', gameState);
+
+      // Make sure the game state has a status of 'active'
+      if (gameState && gameState.status !== 'active') {
+        gameState.status = 'active';
+      }
+
       this.updateGameState(gameState);
       this.addToLog('Game has started!');
+
+      // Mark game as in progress
+      this.gameInProgress = true;
+
+      // Request another update to ensure all clients are in sync
+      setTimeout(() => {
+        SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+      }, 800);
+
+      // Clear any error messages
+      this.clearErrorMessage();
     },
 
     // Improved handler for player joined events
@@ -442,20 +569,80 @@ export default {
     },
 
     handleDealCards(data) {
+      // Skip if we already have cards
+      if (this.playerHand && this.playerHand.length > 0) {
+        console.log('Already have cards, ignoring duplicate dealCards event');
+        return;
+      }
+
+      console.log('Received cards:', data);
       this.receiveCards(data);
       this.addToLog('You have been dealt cards');
+
+      // Mark game as initialized when we get cards
+      this.gameInitialized = true;
+      this.gameInProgress = true;
+
+      // Force the currentGame status to be 'active' if it's not already
+      if (this.currentGame && this.currentGame.status !== 'active') {
+        this.$set(this.currentGame, 'status', 'active');
+        this.addToLog('Game status updated to active');
+      }
+
+      // Clear any lingering error messages
+      this.clearErrorMessage();
+
+      // Request a full game state update to ensure UI is in sync
+      setTimeout(() => {
+        SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+      }, 500);
     },
 
     handleYourTurn(data) {
+      // Prevent duplicate processing in quick succession
+      if (this.isYourTurnProcessed) {
+        console.log('Already processed yourTurn, ignoring duplicate');
+        return;
+      }
+
+      console.log('Your turn event received:', data);
       this.yourTurn(data);
       this.addToLog('It is your turn');
+
+      // Make sure UI shows game is active
+      if (this.currentGame && this.currentGame.status !== 'active') {
+        this.$set(this.currentGame, 'status', 'active');
+      }
+
+      // Mark game as initialized
+      this.gameInitialized = true;
+      this.gameInProgress = true;
+
       this.startActionTimer(data.timeLimit || 30);
+
+      // Set flag to avoid duplicate processing
+      this.isYourTurnProcessed = true;
+
+      // Reset the flag after a delay
+      setTimeout(() => {
+        this.isYourTurnProcessed = false;
+      }, 1000);
     },
 
     handleTurnChanged(data) {
       // Add to log when someone else's turn starts
       if (data.playerId !== this.currentUser.id) {
         this.addToLog(`It is ${data.username}'s turn`);
+      } else {
+        // It's our turn!
+        this.addToLog(`It is your turn`);
+
+        // Ensure the isYourTurn flag is set
+        if (!this.isYourTurn) {
+          this.yourTurn({
+            options: this.getDefaultOptions()
+          });
+        }
       }
     },
 
@@ -504,8 +691,26 @@ export default {
     },
 
     handleGameError(data) {
-      this.SET_ERROR_MESSAGE(data.message);
-      this.addToLog(`Error: ${data.message}`);
+      // Don't set error if game is already in progress - might be recoverable
+      if (this.gameInProgress && this.playerHand && this.playerHand.length > 0) {
+        this.addToLog(`Warning: ${data.message} (game continuing)`);
+      } else {
+        this.SET_ERROR_MESSAGE(data.message);
+        this.addToLog(`Error: ${data.message}`);
+      }
+    },
+
+    handleCreatorInfo(data) {
+      console.log('Received creator info:', data);
+
+      // If creator info isn't in the game data, add it
+      if (this.currentGame && !this.currentGame.creator && data.creator) {
+        this.$set(this.currentGame, 'creator', data.creator);
+        this.addToLog('Creator info received and updated');
+      }
+
+      // Store explicit creator status in case computed property fails
+      this.explicitIsCreator = data.isCreator;
     },
 
     /**
@@ -561,139 +766,225 @@ export default {
     forceStartGame() {
       console.log('Force starting game through debug panel');
       this.handleStartGame();
-    }
+    },
+
+    async debugStartGame() {
+      console.group('DETAILED GAME START DEBUG');
+      console.log('Game ID:', this.gameId);
+      console.log('Current user:', this.currentUser);
+      console.log('Is creator (computed):', this.isCreator);
+      console.log('Current game status:', this.currentGame?.status);
+      console.log('Player count:', this.currentGame?.players?.length);
+
+      try {
+        // Step 1: Check prerequisites
+        console.log('=== STEP 1: Check Prerequisites ===');
+        if (!this.currentGame) {
+          throw new Error('No game data available');
+        }
+        if (!this.currentUser) {
+          throw new Error('No user data available');
+        }
+        if (!this.isCreator) {
+          throw new Error('Only the creator can start the game');
+        }
+        if (this.currentGame.players.length < 2) {
+          throw new Error('Need at least 2 players to start the game');
+        }
+        console.log('Prerequisites check: PASSED');
+
+        // Step 2: Call API endpoint
+        console.log('=== STEP 2: Call API Endpoint ===');
+        console.log('About to call startGame API with gameId:', this.gameId);
+        const apiResult = await this.startGame(this.gameId);
+        console.log('API response:', apiResult);
+
+        if (!apiResult.success) {
+          throw new Error('API returned failure: ' + (apiResult.error || 'Unknown error'));
+        }
+        console.log('API call: PASSED');
+
+        // Step 3: Emit socket event
+        console.log('=== STEP 3: Emit Socket Event ===');
+        console.log('About to emit startGame socket event');
+        // Add a promise wrapper to get result of socket event
+        const socketPromise = new Promise((resolve, reject) => {
+          // Set timeout for socket response
+          const timeout = setTimeout(() => {
+            reject(new Error('Socket event timed out'));
+          }, 5000);
+
+          // One-time event handler for successful game start
+          SocketService.gameSocket?.once('gameStarted', (data) => {
+            clearTimeout(timeout);
+            resolve({ success: true, data });
+          });
+
+          // One-time event handler for error
+          SocketService.gameSocket?.once('gameError', (error) => {
+            clearTimeout(timeout);
+            reject(new Error('Socket reported error: ' + (error.message || 'Unknown error')));
+          });
+
+          // Emit the event
+          SocketService.gameSocket?.emit('startGame', {
+            gameId: this.gameId,
+            userId: this.currentUser.id
+          });
+        });
+
+        try {
+          const socketResult = await socketPromise;
+          console.log('Socket event result:', socketResult);
+          console.log('Socket event: PASSED');
+        } catch (socketError) {
+          console.error('Socket event failed:', socketError);
+          throw socketError;
+        }
+
+        // Step 4: Update local game state
+        console.log('=== STEP 4: Update Local Game State ===');
+        setTimeout(() => {
+          SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+          console.log('Game state update requested');
+        }, 500);
+
+        console.log('Start game process completed successfully');
+      } catch (error) {
+        console.error('Game start process failed:', error);
+        this.SET_ERROR_MESSAGE(error.message || 'Error starting game');
+      }
+
+      console.groupEnd();
+    },
+    requestInitialization() {
+      this.addToLog('Requesting game initialization...');
+      this.triggerGameInitialize();
+    },
+    requestStateUpdate() {
+      this.addToLog('Requesting game state update...');
+      SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+    },
+    shouldShowActions() {
+      // If explicitly notified it's our turn, use that
+      if (this.isYourTurn) return true;
+
+      // Otherwise check if current game state says it's our turn
+      if (!this.currentGame || !this.currentUser) return false;
+
+      // Check if we're in active turn and status is active
+      return this.currentGame.status === 'active' &&
+        this.currentGame.currentTurn &&
+        this.currentUser.id === this.currentGame.currentTurn.toString() &&
+        this.gameInitialized;
+    },
+    getDefaultOptions() {
+      // Return the basic actions a player might have
+      return ['fold', 'check', 'call', 'bet', 'raise'];
+    },
   },
 
   created() {
     this.gameId = this.$route.params.id;
     this.SET_CURRENT_GAME_ID(this.gameId);
 
-    // Fetch game data
-    this.fetchGame(this.gameId)
+    // Ensure we clear any previous game state
+    this.clearErrorMessage();
+
+    console.log(`Initializing game with ID: ${this.gameId}`);
+
+    // Handle case where we navigated directly (e.g., via window.location)
+    if (!this.currentGame) {
+      console.log('No current game in store, will fetch from server');
+    }
+  },
+  mounted() {
+    // Fetch game data first, with retry logic
+    this.fetchGameWithRetry(this.gameId, 3)
       .then(() => {
         if (this.currentGame) {
           this.addToLog(`Joined game #${this.gameId}`);
 
+          // Update local game state based on fetched data
+          if (this.currentGame.status === 'active') {
+            this.gameInProgress = true;
+            this.addToLog('Game is already active');
+          }
+
           // Set up socket connection
-          this.setupSocketConnection();
+          return this.setupSocketConnection();
+        } else {
+          throw new Error('Failed to load game data');
+        }
+      })
+      .then(() => {
+        // Once connected, ensure we get regular updates for the first 20 seconds
+        if (this.currentUser && this.gameId) {
+          SocketService.ensureGameUpdate(this.gameId, this.currentUser.id);
+
+          // Additional check: if game is active but we haven't been initialized
+          setTimeout(() => {
+            if (this.currentGame?.status === 'active' && !this.gameInitialized && this.isCreator) {
+              console.log('Game is active but not initialized, requesting initialization');
+              this.requestInitialization();
+            }
+          }, 2000);
         }
       })
       .catch(error => {
-        console.error('Error fetching game:', error);
+        console.error('Error setting up game:', error);
+        this.SET_ERROR_MESSAGE('Failed to load game. Please try again.');
       });
+  },
 
-    // Make the debug function available globally
-    window.debugGame = this.debugGameState.bind(this);
+  async fetchGameWithRetry(gameId, maxRetries = 3) {
+    let retries = 0;
+
+    while (retries < maxRetries) {
+      try {
+        console.log(`Attempt ${retries + 1} to fetch game data`);
+        const result = await this.fetchGame(gameId);
+
+        if (result.success) {
+          console.log('Successfully fetched game data');
+          return result;
+        }
+
+        throw new Error(result.error || 'Failed to fetch game');
+      } catch (error) {
+        console.error(`Fetch attempt ${retries + 1} failed:`, error);
+        retries++;
+
+        if (retries >= maxRetries) {
+          console.error(`Failed to fetch game after ${maxRetries} attempts`);
+          throw error;
+        }
+
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
   },
 
   beforeDestroy() {
     // Remove event listeners
-    SocketService.off('gameUpdate', this.handleGameUpdate);
-    SocketService.off('gameStarted', this.handleGameStarted);
-    SocketService.off('playerJoined', this.handlePlayerJoined);
-    SocketService.off('playerLeft', this.handlePlayerLeft);
-    SocketService.off('chatMessage', this.handleChatMessage);
-    SocketService.off('dealCards', this.handleDealCards);
-    SocketService.off('yourTurn', this.handleYourTurn);
-    SocketService.off('turnChanged', this.handleTurnChanged);
-    SocketService.off('actionTaken', this.handleActionTaken);
-    SocketService.off('dealFlop', this.handleDealFlop);
-    SocketService.off('dealTurn', this.handleDealTurn);
-    SocketService.off('dealRiver', this.handleDealRiver);
-    SocketService.off('handResult', this.handleHandResult);
-    SocketService.off('newHand', this.handleNewHand);
-    SocketService.off('gameEnded', this.handleGameEnded);
-    SocketService.off('gameError', this.handleGameError);
+    const eventHandlers = [
+      'gameUpdate', 'gameStarted', 'playerJoined', 'playerLeft',
+      'chatMessage', 'dealCards', 'yourTurn', 'turnChanged',
+      'actionTaken', 'dealFlop', 'dealTurn', 'dealRiver',
+      'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo'
+    ];
+
+    eventHandlers.forEach(event => {
+      if (this[`handle${event.charAt(0).toUpperCase() + event.slice(1)}`]) {
+        SocketService.off(event, this[`handle${event.charAt(0).toUpperCase() + event.slice(1)}`]);
+      }
+    });
 
     // Clear any timers
     this.clearActionTimer();
 
     this.clearErrorMessage();
-  },
-
-  // Add this to your Game.vue methods:
-
-  debugCreatorCheck() {
-    console.group('Creator Check Debug');
-
-    // Log the game and user data
-    console.log('Current game:', this.currentGame);
-    console.log('Current user:', this.currentUser);
-
-    // Check if game and user exist
-    if (!this.currentGame) {
-      console.log('Game data is missing!');
-      console.groupEnd();
-      return false;
-    }
-
-    if (!this.currentUser) {
-      console.log('User data is missing!');
-      console.groupEnd();
-      return false;
-    }
-
-    // Log the creator data
-    console.log('Creator data:', this.currentGame.creator);
-
-    if (!this.currentGame.creator) {
-      console.log('Creator data is missing!');
-      console.groupEnd();
-      return false;
-    }
-
-    // Extract creator ID with detailed debugging
-    let creatorId = null;
-
-    if (this.currentGame.creator.user) {
-      console.log('Creator user field exists');
-      console.log('Creator user type:', typeof this.currentGame.creator.user);
-      console.log('Creator user value:', this.currentGame.creator.user);
-
-      if (typeof this.currentGame.creator.user === 'object' && this.currentGame.creator.user !== null) {
-        console.log('Creator user is an object');
-
-        if (this.currentGame.creator.user.$oid) {
-          console.log('Found $oid structure:', this.currentGame.creator.user.$oid);
-          creatorId = this.currentGame.creator.user.$oid;
-        } else if (typeof this.currentGame.creator.user.toString === 'function') {
-          console.log('Using toString() method');
-          creatorId = this.currentGame.creator.user.toString();
-        } else {
-          console.log('Using JSON.stringify');
-          creatorId = JSON.stringify(this.currentGame.creator.user);
-        }
-      } else {
-        console.log('Creator user is not an object, using directly');
-        creatorId = String(this.currentGame.creator.user);
-      }
-    }
-
-    console.log('Extracted creator ID:', creatorId);
-
-    // Extract user ID with detailed debugging
-    let userId = null;
-
-    if (this.currentUser.id) {
-      console.log('Using currentUser.id');
-      userId = String(this.currentUser.id);
-    } else if (this.currentUser._id) {
-      console.log('Using currentUser._id');
-      if (typeof this.currentUser._id === 'object' && this.currentUser._id.$oid) {
-        userId = this.currentUser._id.$oid;
-      } else {
-        userId = String(this.currentUser._id);
-      }
-    }
-
-    console.log('Extracted user ID:', userId);
-    console.log('IDs match:', creatorId === userId);
-
-    console.groupEnd();
-
-    this.addToLog(`Creator check: ${creatorId === userId ? 'You are the creator' : 'You are NOT the creator'}`);
-
-    return creatorId === userId;
   }
 };
 </script>
@@ -751,17 +1042,8 @@ export default {
   }
 }
 
-.debug-toggle {
-  position: fixed;
-  bottom: 10px;
-  right: 10px;
-  background-color: rgba(0, 0, 0, 0.7);
-  color: #fff;
-  border: 1px solid #555;
-  border-radius: 4px;
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  z-index: 900;
+.game-status-wrapper {
+  grid-area: status;
+  width: 100%;
 }
 </style>

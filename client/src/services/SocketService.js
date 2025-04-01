@@ -6,6 +6,9 @@ import { loadConfig } from './config';
 /**
  * Service for handling Socket.IO connections
  */
+// Define a map to track the last update time for each game
+const lastUpdateTime = {};
+
 class SocketService {
   constructor() {
     this.socket = null;
@@ -328,43 +331,31 @@ class SocketService {
    * @returns {Promise} Promise that resolves when update is received
    */
   requestGameUpdate(gameId, userId) {
-    return new Promise((resolve, reject) => {
-      if (!gameId) {
-        return reject(new Error('Game ID is required'));
-      }
-      
-      if (!this.gameSocket || !this.isConnected) {
-        return reject(new Error('Socket not connected'));
-      }
-      
-      console.log(`Requesting game update for ${gameId}`);
-      
-      // Set a timeout for the update request
-      const updateTimeout = setTimeout(() => {
-        reject(new Error('Game update timeout after 5 seconds'));
-      }, 5000);
-      
-      // Listen for game update event
-      const updateHandler = () => {
-        clearTimeout(updateTimeout);
-        resolve();
-      };
-      
-      this.gameSocket.once('gameUpdate', updateHandler);
-      
-      // Listen for errors
-      const errorHandler = (error) => {
-        clearTimeout(updateTimeout);
-        reject(error);
-      };
-      
-      this.gameSocket.once('gameError', errorHandler);
-      
-      // Send the update request
-      this.gameSocket.emit('requestGameUpdate', {
-        gameId,
-        userId
-      });
+    if (!gameId) {
+      console.warn('Cannot request game update - gameId is required');
+      return;
+    }
+    
+    if (!this.gameSocket || !this.isConnected) {
+      console.warn('Cannot request game update - socket not connected');
+      return;
+    }
+    
+    // Throttle requests - don't send if recent request was made
+    const now = Date.now();
+    const lastUpdate = lastUpdateTime[gameId] || 0;
+    
+    if (now - lastUpdate < 2000) {
+      console.log('Throttling game update request');
+      return;
+    }
+    
+    console.log(`Requesting game update for ${gameId}`);
+    lastUpdateTime[gameId] = now;
+    
+    this.gameSocket.emit('requestGameUpdate', {
+      gameId,
+      userId
     });
   }
 
@@ -537,6 +528,80 @@ class SocketService {
       handlers: events.length
     };
   }
+
+  async joinGameWithRetry(gameId, userId, username, maxRetries = 3) {
+    let retries = 0;
+    
+    while (retries < maxRetries) {
+      try {
+        console.log(`Attempt ${retries + 1} to join game ${gameId}`);
+        
+        // Make sure we're connected
+        if (!this.isConnected || !this.gameSocket) {
+          await this.init();
+        }
+        
+        // Join the game room
+        await this.joinGame(gameId, userId, username);
+        
+        console.log(`Successfully joined game ${gameId} on attempt ${retries + 1}`);
+        
+        // Request immediate game update to ensure current state
+        this.requestGameUpdate(gameId, userId);
+        
+        return true;
+      } catch (error) {
+        console.error(`Join game attempt ${retries + 1} failed:`, error);
+        retries++;
+        
+        if (retries >= maxRetries) {
+          console.error(`Failed to join game after ${maxRetries} attempts`);
+          throw error;
+        }
+        
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+  }
+  
+  // Add this method to ensure reliable game updates
+  ensureGameUpdate(gameId, userId, intervalMs = 5000, duration = 20000) {
+    console.log(`Setting up game update polling for game ${gameId}`);
+    
+    // Request initial update if enough time has passed since last update
+    const now = Date.now();
+    const lastUpdate = lastUpdateTime[gameId] || 0;
+    
+    if (now - lastUpdate > 2000) {
+      this.requestGameUpdate(gameId, userId);
+      lastUpdateTime[gameId] = now;
+    } else {
+      console.log('Skipping immediate update due to recent request');
+    }
+    
+    // Set up interval for periodic updates with throttling
+    const intervalId = setInterval(() => {
+      if (!this.isConnected) return;
+      
+      const currentTime = Date.now();
+      const lastUpdate = lastUpdateTime[gameId] || 0;
+      
+      // Only request update if enough time has passed
+      if (currentTime - lastUpdate > 2000) {
+        this.requestGameUpdate(gameId, userId);
+        lastUpdateTime[gameId] = currentTime;
+      }
+    }, intervalMs);
+    
+    // Clear interval after duration
+    setTimeout(() => {
+      clearInterval(intervalId);
+      console.log('Stopped game update polling');
+    }, duration);
+    
+    return intervalId;
+  }  
 }
 
 // Create and export singleton instance

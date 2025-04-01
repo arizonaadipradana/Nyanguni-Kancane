@@ -1,7 +1,8 @@
-<!-- client/src/components/Game/GameStatus.vue -->
+<!-- client/src/components/Game/GameStatus.vue - Update template section -->
+
 <template>
   <div class="game-status">
-    <div v-if="currentGame.status === 'waiting'">
+    <div v-if="currentGame.status === 'waiting'" class="waiting-status">
       <p>Waiting for players to join...</p>
       <p>Game ID: <strong>{{ gameId }}</strong></p>
       <p>Players: {{ currentGame.players.length }}/8</p>
@@ -40,14 +41,41 @@
       </div>
     </div>
 
-    <div v-else>
+    <div v-else-if="currentGame.status === 'active'" class="active-status">
       <p>Game in progress</p>
-      <p>Current turn: {{ getCurrentPlayerName() }}</p>
-      <p>Current bet: {{ currentGame.currentBet }} chips</p>
+      <div class="game-info">
+        <div class="info-item">
+          <span class="label">Current turn:</span>
+          <span class="value">{{ getCurrentPlayerName() }}</span>
+        </div>
+        <div class="info-item">
+          <span class="label">Current bet:</span>
+          <span class="value">{{ currentGame.currentBet }} chips</span>
+        </div>
+        <div class="info-item">
+          <span class="label">Betting round:</span>
+          <span class="value">{{ formatBettingRound(currentGame.bettingRound) }}</span>
+        </div>
+      </div>
+
+      <!-- If game is active but not initialized for this user -->
+      <div v-if="isCreator && !gameInitialized" class="initialization-message">
+        <p>Game is active but not fully initialized.</p>
+        <button @click="requestInitialization" class="initialize-btn">
+          Initialize Game
+        </button>
+      </div>
     </div>
     
-    <!-- Debug info always visible -->
-    <div class="debug-section">
+    <div v-else class="completed-status">
+      <p>Game completed</p>
+      <button @click="returnToLobby" class="btn">
+        Return to Lobby
+      </button>
+    </div>
+    
+    <!-- Debug info always visible during development -->
+    <div class="debug-section" v-if="isDevelopment">
       <button @click="debugVisible = !debugVisible" class="debug-toggle">
         {{ debugVisible ? 'Hide Debug Info' : 'Show Debug Info' }}
       </button>
@@ -55,7 +83,7 @@
       <div v-if="debugVisible" class="debug-details">
         <div class="debug-item">
           <span class="debug-label">Creator:</span>
-          <span class="debug-value">{{ JSON.stringify(currentGame.creator) }}</span>
+          <span class="debug-value">{{ getCreatorUsername() }}</span>
         </div>
         <div class="debug-item">
           <span class="debug-label">Is Creator:</span>
@@ -70,6 +98,7 @@
           <span class="debug-value">{{ currentGame.status }}</span>
         </div>
         <button @click="forceStartGame" class="debug-btn">Force Start Game</button>
+        <button @click="requestStateUpdate" class="debug-btn">Request Game Update</button>
       </div>
     </div>
   </div>
@@ -95,19 +124,38 @@ export default {
     isStarting: {
       type: Boolean,
       default: false
+    },
+    gameInitialized: {
+      type: Boolean,
+      default: false
     }
   },
   
   data() {
     return {
-      debugVisible: false
+      debugVisible: false,
+      isDevelopment: process.env.NODE_ENV !== 'production'
     };
   },
   
   methods: {
     getCurrentPlayerName() {
-      // Emit an event to get the current player name from parent
-      return this.$emit('getCurrentPlayerName');
+      return this.$emit('getCurrentPlayerName') || 'Waiting...';
+    },
+    
+    getCreatorUsername() {
+      return this.currentGame.creator?.username || 'Unknown';
+    },
+    
+    formatBettingRound(round) {
+      const formats = {
+        'preflop': 'Pre-Flop',
+        'flop': 'Flop',
+        'turn': 'Turn',
+        'river': 'River',
+        'showdown': 'Showdown'
+      };
+      return formats[round] || round;
     },
     
     startGame() {
@@ -118,6 +166,18 @@ export default {
     forceStartGame() {
       console.log("Forcing game start from debug panel");
       this.$emit('startGame');
+    },
+    
+    requestInitialization() {
+      this.$emit('requestInitialization');
+    },
+    
+    requestStateUpdate() {
+      this.$emit('requestStateUpdate');
+    },
+    
+    returnToLobby() {
+      this.$router.push('/lobby');
     }
   }
 };
@@ -130,6 +190,37 @@ export default {
   padding: 15px;
   border-radius: 8px;
   text-align: center;
+}
+
+.waiting-status, .active-status, .completed-status {
+  margin-bottom: 20px;
+}
+
+.game-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background-color: #333;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 10px auto;
+  max-width: 300px;
+}
+
+.info-item {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.label {
+  color: #999;
+  font-weight: bold;
+}
+
+.value {
+  color: #fff;
 }
 
 .creator-info {
@@ -166,11 +257,19 @@ export default {
   color: #aaa;
 }
 
+.initialization-message {
+  margin-top: 20px;
+  padding: 10px;
+  background-color: #554400;
+  border-radius: 8px;
+  border: 1px solid #ffc107;
+}
+
 .start-game-container {
   margin-top: 20px;
 }
 
-.start-btn {
+.start-btn, .initialize-btn {
   padding: 12px 24px;
   border: none;
   border-radius: 4px;
@@ -181,6 +280,15 @@ export default {
   cursor: pointer;
   transition: background-color 0.3s;
   animation: pulse 2s infinite;
+}
+
+.initialize-btn {
+  background-color: #ff9800;
+  animation: none;
+}
+
+.initialize-btn:hover {
+  background-color: #e68900;
 }
 
 .start-btn:hover {
@@ -258,6 +366,7 @@ export default {
   border-radius: 4px;
   padding: 5px 10px;
   margin-top: 10px;
+  margin-right: 5px;
   cursor: pointer;
   font-size: 12px;
 }
