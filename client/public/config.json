@@ -1,0 +1,6 @@
+{
+    "apiUrl": "YOUR_RENDER_BACKEND_URL",
+    "socketUrl": "YOUR_RENDER_BACKEND_URL",
+    "env": "production",
+    "version": "1.0.0"
+  }
