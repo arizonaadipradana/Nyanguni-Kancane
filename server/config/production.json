@@ -3,5 +3,5 @@
     "jwtSecret": "nyangunisecret",
     "port": 3000,
     "serverUrl": "https://nyanguni-kancane-api.onrender.com",
-    "clientUrl": "https://[your-netlify-app-name].netlify.app"
+    "clientUrl": "https://nyanguni-kancane.netlify.app/"
   }
