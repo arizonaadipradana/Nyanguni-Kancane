@@ -23,12 +23,48 @@ const app = express();
 const server = http.createServer(app);
 
 // CORS middleware - simplified version
+// CORS middleware - improved with dynamic origin detection
 app.use(cors({
-  origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://192.168.1.3:8080'],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    // Allow all localhost and local network origins
+    if (
+      origin.startsWith('http://localhost') || 
+      origin.startsWith('http://127.0.0.1') ||
+      origin.startsWith('http://192.168.') ||
+      origin.startsWith('http://10.') ||
+      origin.includes('ngrok-free.app')
+    ) {
+      return callback(null, true);
+    }
+    
+    // For production
+    if (process.env.NODE_ENV === 'production') {
+      // Extract hostname from origin
+      try {
+        const hostname = new URL(origin).hostname;
+        
+        // Check if origin matches our allowed domains
+        if (hostname === 'yourdomain.com' || hostname.endsWith('.yourdomain.com')) {
+          return callback(null, true);
+        }
+      } catch (e) {
+        console.error('Error parsing origin URL:', e);
+      }
+    }
+    
+    console.log(`CORS blocked request from origin: ${origin}`);
+    callback(new Error('Not allowed by CORS'));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Auth-Token'],
+  maxAge: 86400 // 24 hours caching for preflight requests
 }));
+
 
 app.options('*', cors());
 
@@ -57,12 +93,14 @@ app.use((req, res, next) => {
 // Socket.io setup with simplified CORS
 const io = socketIO(server, {
   cors: {
-    origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://192.168.1.3:8080'],
+    origin: true, // Match Express CORS settings
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With']
   },
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  pingTimeout: 10000, // Increase timeout for better connection stability
+  pingInterval: 5000
 });
 
 // Initialize sockets

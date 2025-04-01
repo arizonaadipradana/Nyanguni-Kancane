@@ -10,6 +10,18 @@ import Game from '../views/Game.vue'
 
 Vue.use(VueRouter)
 
+const originalPush = VueRouter.prototype.push
+VueRouter.prototype.push = function push(location) {
+  return originalPush.call(this, location).catch(err => {
+    // Only throw error if it's not a NavigationDuplicated error
+    if (err.name !== 'NavigationDuplicated') {
+      return Promise.reject(err)
+    }
+    // Otherwise swallow the error
+    return Promise.resolve()
+  })
+}
+
 const routes = [
   {
     path: '/',

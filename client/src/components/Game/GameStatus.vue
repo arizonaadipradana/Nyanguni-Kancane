@@ -1,5 +1,4 @@
-<!-- client/src/components/Game/GameStatus.vue - Update template section -->
-
+<!-- client/src/components/Game/GameStatus.vue -->
 <template>
   <div class="game-status">
     <div v-if="currentGame.status === 'waiting'" class="waiting-status">
@@ -140,7 +139,14 @@ export default {
   
   methods: {
     getCurrentPlayerName() {
-      return this.$emit('getCurrentPlayerName') || 'Waiting...';
+      if (!this.currentGame || !this.currentGame.currentTurn) return 'N/A';
+
+      // Find player by ID, avoiding circular structure
+      const player = this.currentGame.players.find(
+        p => p.id === this.currentGame.currentTurn
+      );
+
+      return player ? player.username : 'Unknown';
     },
     
     getCreatorUsername() {
