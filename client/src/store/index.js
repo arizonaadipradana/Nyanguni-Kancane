@@ -118,28 +118,41 @@ export default new Vuex.Store({
     async login({ commit, dispatch }, credentials) {
       commit("SET_LOADING", true);
       commit("CLEAR_ERROR_MESSAGE");
-
+    
       try {
+        console.log("Sending login request with credentials:", {
+          username: credentials.username,
+          password: "***HIDDEN***"
+        });
+    
         const response = await axios.post("/api/auth/login", credentials);
+        console.log("Login response received:", response);
+    
         const { token, user } = response.data;
-
+    
         if (!token) {
           commit("SET_ERROR_MESSAGE", "No token received from server");
           return { success: false, error: "Authentication failed" };
         }
-
+    
+        // Store token in localStorage and state
         localStorage.setItem("token", token);
         commit("SET_TOKEN", token);
-
+        
+        // Set up auth header for axios
+        axios.defaults.headers.common["x-auth-token"] = token;
+    
         // If the server returns user data with the token, use it
         if (user && user.id && user.username) {
           commit("SET_USER", user);
-          return { success: true };
+          return { success: true, token };
         } else {
           // Otherwise fetch user data
-          return await dispatch("fetchUserData");
+          const userData = await dispatch("fetchUserData");
+          return { success: userData.success, token };
         }
       } catch (error) {
+        console.error("Login error full details:", error);
         const errorMsg = error.response?.data?.msg || "Login failed";
         commit("SET_ERROR_MESSAGE", errorMsg);
         return { success: false, error: errorMsg };

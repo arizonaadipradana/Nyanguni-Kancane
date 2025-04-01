@@ -24,7 +24,7 @@ const server = http.createServer(app);
 
 // CORS middleware - simplified version
 app.use(cors({
-  origin: ['http://localhost:8080', 'http://127.0.0.1:8080'],
+  origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://192.168.1.3:8080'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
@@ -42,7 +42,7 @@ app.use('/api/games', require('./routes/games'));
 app.use('/api/config', require('./routes/config'));
 
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', 'http://localhost:8080');
+  res.header('Access-Control-Allow-Origin', req.headers.origin); // Dynamic based on request
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -57,7 +57,7 @@ app.use((req, res, next) => {
 // Socket.io setup with simplified CORS
 const io = socketIO(server, {
   cors: {
-    origin: ['http://localhost:8080', 'http://127.0.0.1:8080'],
+    origin: ['http://localhost:8080', 'http://127.0.0.1:8080', 'http://192.168.1.3:8080'],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']

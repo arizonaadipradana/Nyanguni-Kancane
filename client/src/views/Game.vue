@@ -86,6 +86,7 @@ export default {
       isConnected: false,
       isStarting: false,
       gameLog: [],
+      lastLogMessages: [], // Initialize this array to fix the error
       betAmount: 1,
       raiseAmount: 0,
       showResult: false,
@@ -97,9 +98,9 @@ export default {
       explicitIsCreator: false,
       gameInProgress: false,
       gameInitialized: false,
-      lastLogMessage: [],
+      messageDedupeTime: 1000,
       isYourTurnProcessed: false,
-      messageDedupeTime: 1000
+      setupComplete: false // Add a flag to track if setup is complete
     };
   },
 
@@ -112,6 +113,9 @@ export default {
       'isYourTurn',
       'availableActions'
     ]),
+    isAuthenticated() {
+      return !!this.$store.getters.token || !!localStorage.getItem('token');
+    },
 
     isCreator() {
       if (!this.currentGame || !this.currentUser) {
@@ -401,7 +405,9 @@ export default {
           this.currentUser.username
         );
 
-        this.isConnected = true;
+        // IMPORTANT: Update the isConnected flag based on the SocketService status
+        this.isConnected = SocketService.isSocketConnected();
+
         this.addToLog('Connected to game server');
 
         // Register event handlers
@@ -423,11 +429,25 @@ export default {
         SocketService.on('gameError', this.handleGameError);
         SocketService.on('creatorInfo', this.handleCreatorInfo);
 
+        // Add a connect listener to update isConnected when the socket connects
+        SocketService.gameSocket.on('connect', () => {
+          console.log('Socket connected event received');
+          this.isConnected = true;
+        });
+
+        // Add a disconnect listener to update isConnected when the socket disconnects
+        SocketService.gameSocket.on('disconnect', () => {
+          console.log('Socket disconnected event received');
+          this.isConnected = false;
+        });
+
         // Request an initial game state update with retry logic
         this.requestGameState();
+        return true;
       } catch (error) {
         console.error('Error setting up socket connection:', error);
         this.addToLog('Failed to connect to game server');
+        this.isConnected = false;
 
         // Set up auto-reconnect
         setTimeout(() => {
@@ -436,6 +456,7 @@ export default {
             this.setupSocketConnection();
           }
         }, 3000);
+        return false;
       }
     },
 
@@ -517,6 +538,9 @@ export default {
         this.$forceUpdate();
       }
 
+      // Clear any error message once we successfully receive game state
+      this.SET_ERROR_MESSAGE('');
+
       // Log connection status
       if (!this.isConnected) {
         this.isConnected = true;
@@ -540,7 +564,7 @@ export default {
 
       // Request another update to ensure all clients are in sync
       setTimeout(() => {
-        SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+        SocketService.requestGameUpdate(this.gameId, this.currentUser?.id);
       }, 800);
 
       // Clear any error messages
@@ -549,11 +573,17 @@ export default {
 
     // Improved handler for player joined events
     handlePlayerJoined(data) {
+      if (!data || !data.username) {
+        console.warn('Received playerJoined event with invalid data:', data);
+        return;
+      }
+
+      console.log('Player joined event received:', data);
       this.addToLog(`${data.username} joined the game`);
 
-      // Make sure we get fresh game state
+      // Update player list with automatic refresh
       setTimeout(() => {
-        SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+        SocketService.requestGameUpdate(this.gameId, this.currentUser?.id);
       }, 300);
     },
 
@@ -882,6 +912,35 @@ export default {
       // Return the basic actions a player might have
       return ['fold', 'check', 'call', 'bet', 'raise'];
     },
+
+    async fetchGameWithRetry(gameId, maxRetries = 3) {
+      let retries = 0;
+
+      while (retries < maxRetries) {
+        try {
+          console.log(`Attempt ${retries + 1} to fetch game data`);
+          const result = await this.fetchGame(gameId);
+
+          if (result.success) {
+            console.log('Successfully fetched game data');
+            return result;
+          }
+
+          throw new Error(result.error || 'Failed to fetch game');
+        } catch (error) {
+          console.error(`Fetch attempt ${retries + 1} failed:`, error);
+          retries++;
+
+          if (retries >= maxRetries) {
+            console.error(`Failed to fetch game after ${maxRetries} attempts`);
+            throw error;
+          }
+
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    },
   },
 
   created() {
@@ -899,7 +958,36 @@ export default {
     }
   },
   mounted() {
-    // Fetch game data first, with retry logic
+    // Get token from localStorage 
+    const token = localStorage.getItem('token');
+    const isAuthenticated = !!token;
+
+    // Check authentication but avoid redirect loop
+    if (!isAuthenticated) {
+      console.log('User not authenticated, redirecting to login');
+      this.SET_ERROR_MESSAGE('Please login to view this game');
+
+      // Use replace instead of push to avoid the redirect error
+      this.$router.replace('/login');
+      return;
+    }
+
+    // If we're authenticated but don't have user data, try to fetch it
+    if (!this.currentUser && token) {
+      console.log('No user data, attempting to fetch');
+      this.$store.dispatch('fetchUserData').catch(err => {
+        console.error('Error fetching user data:', err);
+      });
+    }
+
+    // Continue with normal initialization
+    this.gameId = this.$route.params.id;
+    this.SET_CURRENT_GAME_ID(this.gameId);
+    this.clearErrorMessage();
+
+    console.log(`Initializing game with ID: ${this.gameId}`);
+
+    // Fetch game data with retry logic
     this.fetchGameWithRetry(this.gameId, 3)
       .then(() => {
         if (this.currentGame) {
@@ -918,11 +1006,14 @@ export default {
         }
       })
       .then(() => {
-        // Once connected, ensure we get regular updates for the first 20 seconds
+        // Once connected, ensure we get regular updates
         if (this.currentUser && this.gameId) {
-          SocketService.ensureGameUpdate(this.gameId, this.currentUser.id);
+          // Request a game state update
+          if (SocketService.isSocketConnected()) {
+            SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+          }
 
-          // Additional check: if game is active but we haven't been initialized
+          // Additional check for active but uninitialized game
           setTimeout(() => {
             if (this.currentGame?.status === 'active' && !this.gameInitialized && this.isCreator) {
               console.log('Game is active but not initialized, requesting initialization');
@@ -963,6 +1054,46 @@ export default {
         // Wait before retry
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
+    }
+  },
+
+  addToLog(message) {
+    // Check for duplicates within the time window
+    const timestamp = new Date().toLocaleTimeString();
+    const now = Date.now();
+
+    // Initialize lastLogMessages if it doesn't exist
+    if (!this.lastLogMessages) {
+      this.lastLogMessages = [];
+    }
+
+    // Don't add the exact same message within the deduplication window
+    const isDuplicate = this.lastLogMessages.some(item =>
+      item.message === message && (now - item.time < this.messageDedupeTime)
+    );
+
+    if (isDuplicate) {
+      console.log(`Suppressed duplicate log message: ${message}`);
+      return;
+    }
+
+    // Add to tracking list for deduplication
+    this.lastLogMessages.push({
+      message,
+      time: now
+    });
+
+    // Maintain the tracking list size
+    if (this.lastLogMessages.length > 10) {
+      this.lastLogMessages.shift();
+    }
+
+    // Add the message to the actual log
+    this.gameLog.unshift(`[${timestamp}] ${message}`);
+
+    // Keep log at reasonable size
+    if (this.gameLog.length > 50) {
+      this.gameLog.pop();
     }
   },
 
