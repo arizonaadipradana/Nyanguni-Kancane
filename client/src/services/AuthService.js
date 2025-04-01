@@ -1,6 +1,7 @@
 // client/src/services/AuthService.js
 import axios from "axios";
 import store from "../store";
+import getConfig from './config';
 
 /**
  * Service for handling authentication-related API calls
@@ -340,4 +341,13 @@ class AuthService {
 const authService = new AuthService();
 authService.setupInterceptors();
 
-export default authService;
+export default {
+  async register(userData) {
+    const config = await getConfig();
+    return axios.post(`${config.apiUrl}/api/auth/register`, userData);
+  },
+  async login(credentials) {
+    const config = await getConfig();
+    return axios.post(`${config.apiUrl}/api/auth/login`, credentials);
+  }
+};

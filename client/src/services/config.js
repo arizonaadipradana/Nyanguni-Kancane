@@ -1,5 +1,5 @@
 // client/src/services/config.js
-// Modified version for accessing the API through ngrok
+// Modified version for proper production deployment
 
 import axios from "axios";
 
@@ -9,8 +9,11 @@ let loadPromise = null;
 let lastFetchTime = 0;
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
+// Production backend URL on Render.com
+const PRODUCTION_API_URL = "https://nyanguni-kancane.onrender.com";
+
 /**
- * Load application configuration from the server with better error handling
+ * Load application configuration with environment awareness
  * @param {boolean} forceRefresh - Force a refresh of the configuration
  * @returns {Promise<Object>} Configuration object
  */
@@ -31,14 +34,28 @@ export const loadConfig = async (forceRefresh = false) => {
   loadPromise = new Promise((resolve) => {
     const fetchConfig = async () => {
       try {
-        // Remove ngrok URL from localStorage if it's causing issues
-        const useNgrok = localStorage.getItem("useNgrok") === "true";
-        if (!useNgrok && localStorage.getItem("ngrokUrl")) {
-          console.log("Removing saved ngrok URL from localStorage");
-          localStorage.removeItem("ngrokUrl");
+        // Check if we're in a production environment (Netlify)
+        const isProduction = 
+          window.location.hostname.includes('netlify.app') || 
+          !window.location.hostname.includes('localhost');
+
+        if (isProduction) {
+          // In production, use the hardcoded Render.com backend URL
+          config = {
+            apiUrl: PRODUCTION_API_URL,
+            socketUrl: PRODUCTION_API_URL,
+            env: "production",
+            version: "1.0.0"
+          };
+          
+          console.log("Using production configuration:", config);
+          lastFetchTime = Date.now();
+          isLoading = false;
+          resolve(config);
+          return;
         }
 
-        // Start with direct server communication
+        // For development, try to load from local config endpoint first
         let configUrl = `${window.location.origin}/api/config`;
         console.log("Loading configuration from current origin:", configUrl);
 
@@ -50,13 +67,6 @@ export const loadConfig = async (forceRefresh = false) => {
 
           config = response.data;
           console.log("Application configuration loaded:", config);
-
-          // Only save ngrok URL if useNgrok is true
-          if (useNgrok && config.isNgrok && config.apiUrl) {
-            localStorage.setItem("ngrokUrl", config.apiUrl);
-            console.log("Saved ngrok URL to localStorage:", config.apiUrl);
-          }
-
           lastFetchTime = Date.now();
           isLoading = false;
           resolve(config);
@@ -85,11 +95,15 @@ export const loadConfig = async (forceRefresh = false) => {
       } catch (error) {
         console.error("Failed to load configuration, using defaults:", error);
 
-        // Create simple fallback config with current origin
+        // Create simple fallback config that works in all environments
+        const isProduction = 
+          window.location.hostname.includes('netlify.app') || 
+          !window.location.hostname.includes('localhost');
+          
         config = {
-          apiUrl: window.location.origin,
-          socketUrl: window.location.origin,
-          env: "development",
+          apiUrl: isProduction ? PRODUCTION_API_URL : window.location.origin,
+          socketUrl: isProduction ? PRODUCTION_API_URL : window.location.origin,
+          env: isProduction ? "production" : "development",
           version: "1.0.0",
           isFallback: true,
         };
@@ -114,21 +128,16 @@ export const loadConfig = async (forceRefresh = false) => {
  */
 function determineServerUrl() {
   const hostname = window.location.hostname;
-
-  // Use the current origin as default - most reliable for development
-  const currentOrigin = window.location.origin;
-
-  // Only use ngrok if explicitly enabled
-  const useNgrok = localStorage.getItem("useNgrok") === "true";
-  if (useNgrok) {
-    // Try to get saved ngrok URL if enabled
-    const savedNgrokUrl = localStorage.getItem("ngrokUrl");
-    if (savedNgrokUrl) {
-      return savedNgrokUrl;
-    }
+  
+  // Check if we're in production (Netlify)
+  if (hostname.includes('netlify.app')) {
+    return PRODUCTION_API_URL;
   }
 
-  // For development with devices on local network, handle possible proxy setup
+  // Use the current origin as default for development
+  const currentOrigin = window.location.origin;
+
+  // For development with devices on local network
   if (
     hostname === "localhost" ||
     hostname === "127.0.0.1" ||
@@ -140,11 +149,11 @@ function determineServerUrl() {
       console.log("Using current origin with proxy:", currentOrigin);
       return currentOrigin;
     }
-    return currentOrigin;
+    return "http://localhost:3000"; // Default local API server port
   }
 
-  // For production, assume API is on same domain
-  return currentOrigin;
+  // For any other environment, use the hardcoded production URL
+  return PRODUCTION_API_URL;
 }
 
 /**
@@ -175,3 +184,8 @@ export const getConfigValue = async (key, defaultValue = null) => {
 export const refreshConfig = async () => {
   return loadConfig(true);
 };
+
+// Export a default function that returns the config
+export default async function getConfig() {
+  return loadConfig();
+}

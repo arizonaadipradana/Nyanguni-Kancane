@@ -17,3 +17,21 @@
     <!-- built files will be auto injected -->
   </body>
 </html>
+
+<script>
+  // Load config from JSON and set it globally
+  fetch('/config.json')
+    .then(response => response.json())
+    .then(config => {
+      window.__APP_CONFIG__ = config;
+    })
+    .catch(error => {
+      console.error('Failed to load config:', error);
+      // Fallback config
+      window.__APP_CONFIG__ = {
+        apiUrl: 'https://nyanguni-kancane.onrender.com',
+        socketUrl: 'https://nyanguni-kancane.onrender.com',
+        env: 'production'
+      };
+    });
+</script>

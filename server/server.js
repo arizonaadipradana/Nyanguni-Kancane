@@ -33,7 +33,7 @@ app.use(cors({
     const allowedOrigins = [
       'http://localhost:8080',
       'http://127.0.0.1:8080',
-      'https://[your-netlify-app-name].netlify.app'  // Your Netlify domain
+      'https://nyanguni-kancane.netlify.app'  // Your Netlify domain
     ];
     
     // Check if the origin is allowed
