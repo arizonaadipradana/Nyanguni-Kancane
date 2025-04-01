@@ -24,9 +24,32 @@ Vue.config.errorHandler = (err, vm, info) => {
   console.error('Error Info:', info);
 };
 
+// Initialize auth from localStorage if available
+const initAuth = async () => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    // Set token in store
+    store.commit('SET_TOKEN', token);
+    // Set header for future requests
+    axios.defaults.headers.common['x-auth-token'] = token;
+    
+    try {
+      // Fetch user data
+      await store.dispatch('fetchUserData');
+      console.log('User data loaded from token');
+    } catch (error) {
+      console.error('Error loading user data from token:', error);
+      // Clear invalid token
+      localStorage.removeItem('token');
+      delete axios.defaults.headers.common['x-auth-token'];
+      store.commit('CLEAR_AUTH');
+    }
+  }
+};
+
 // Load config and then initialize app
 loadConfig()
-  .then(config => {
+  .then(async config => {
     console.log('Application config loaded:', config);
     
     // Update axios base URL if it's different
@@ -34,6 +57,9 @@ loadConfig()
       axios.defaults.baseURL = config.apiUrl;
       console.log('Updated axios base URL to:', config.apiUrl);
     }
+    
+    // Initialize auth before mounting app
+    await initAuth();
     
     // Initialize Vue instance
     new Vue({
@@ -63,12 +89,15 @@ loadConfig()
   .catch(error => {
     console.error('Failed to load config:', error);
     
-    // Initialize Vue even if config fails
-    new Vue({
-      router,
-      store,
-      render: h => h(App)
-    }).$mount('#app');
+    // Still initialize auth
+    initAuth().then(() => {
+      // Initialize Vue even if config fails
+      new Vue({
+        router,
+        store,
+        render: h => h(App)
+      }).$mount('#app');
+    });
   });
 
 // Set up network debugging in development

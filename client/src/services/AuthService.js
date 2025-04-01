@@ -207,12 +207,24 @@ class AuthService {
       });
 
       if (response.data && response.data.username) {
+        // Make sure the response has all required fields
+        const userData = {
+          id: response.data.id || response.data._id,
+          username: response.data.username,
+          balance: response.data.balance || 0,
+          ...response.data,
+        };
+
+        // Standardize the ID fields
+        if (userData.id && !userData._id) userData._id = userData.id;
+        if (userData._id && !userData.id) userData.id = userData._id;
+
         // Update the store with fresh user data
-        store.commit("SET_USER", response.data);
-        console.log("User data refreshed successfully");
+        store.commit("SET_USER", userData);
+        console.log("User data refreshed successfully:", userData);
         return true;
       } else {
-        console.warn("Refresh returned invalid user data");
+        console.warn("Refresh returned invalid user data:", response.data);
         return false;
       }
     } catch (error) {

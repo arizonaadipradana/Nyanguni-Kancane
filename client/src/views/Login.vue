@@ -116,6 +116,12 @@ export default {
             // Set auth header for future requests
             axios.defaults.headers.common['x-auth-token'] = token;
             console.log('Auth header set for axios');
+
+            // If we don't have user data yet, fetch it
+            if (!this.$store.getters.currentUser) {
+              console.log('No user data available, fetching from server');
+              await this.$store.dispatch('fetchUserData');
+            }
           } else {
             console.warn('No token received from login');
           }

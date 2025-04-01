@@ -47,22 +47,46 @@ export default new Vuex.Store({
     SET_USER(state, user) {
       // Handle both id and _id (MongoDB uses _id)
       if (user) {
+        // Create a new object to avoid mutation issues
+        const standardizedUser = { ...user };
+        
         // Make sure we have an id property, copying from _id if needed
-        if (user._id && !user.id) {
-          user.id = user._id;
+        if (!standardizedUser.id && standardizedUser._id) {
+          standardizedUser.id = standardizedUser._id;
         }
         
         // Also do the reverse - ensure _id exists if we have id
-        if (user.id && !user._id) {
-          user._id = user.id;
+        if (standardizedUser.id && !standardizedUser._id) {
+          standardizedUser._id = standardizedUser.id;
+        }
+        
+        // Handle MongoDB $oid format if present
+        if (typeof standardizedUser.id === 'object' && standardizedUser.id?.$oid) {
+          standardizedUser.id = standardizedUser.id.$oid;
+        }
+        if (typeof standardizedUser._id === 'object' && standardizedUser._id?.$oid) {
+          standardizedUser._id = standardizedUser._id.$oid;
+        }
+        
+        // Handle objects with toString method (like MongoDB ObjectID)
+        if (typeof standardizedUser.id === 'object' && typeof standardizedUser.id?.toString === 'function') {
+          standardizedUser.id = standardizedUser.id.toString();
+        }
+        if (typeof standardizedUser._id === 'object' && typeof standardizedUser._id?.toString === 'function') {
+          standardizedUser._id = standardizedUser._id.toString();
         }
         
         // Ensure both are strings to make comparison easier
-        if (user.id) user.id = String(user.id);
-        if (user._id) user._id = String(user._id);
+        if (standardizedUser.id) standardizedUser.id = String(standardizedUser.id);
+        if (standardizedUser._id) standardizedUser._id = String(standardizedUser._id);
+        
+        // Set the standardized user in state
+        state.user = standardizedUser;
+        
+        console.log('User data standardized and stored in state:', standardizedUser);
+      } else {
+        state.user = null;
       }
-      
-      state.user = user;
     },
 
     CLEAR_AUTH(state) {
@@ -118,30 +142,30 @@ export default new Vuex.Store({
     async login({ commit, dispatch }, credentials) {
       commit("SET_LOADING", true);
       commit("CLEAR_ERROR_MESSAGE");
-    
+
       try {
         console.log("Sending login request with credentials:", {
           username: credentials.username,
-          password: "***HIDDEN***"
+          password: "***HIDDEN***",
         });
-    
+
         const response = await axios.post("/api/auth/login", credentials);
         console.log("Login response received:", response);
-    
+
         const { token, user } = response.data;
-    
+
         if (!token) {
           commit("SET_ERROR_MESSAGE", "No token received from server");
           return { success: false, error: "Authentication failed" };
         }
-    
+
         // Store token in localStorage and state
         localStorage.setItem("token", token);
         commit("SET_TOKEN", token);
-        
+
         // Set up auth header for axios
         axios.defaults.headers.common["x-auth-token"] = token;
-    
+
         // If the server returns user data with the token, use it
         if (user && user.id && user.username) {
           commit("SET_USER", user);
@@ -195,20 +219,30 @@ export default new Vuex.Store({
       try {
         // Make sure we have a token
         if (!state.token) {
-          commit("SET_ERROR_MESSAGE", "No authentication token");
-          return { success: false, error: "No authentication token" };
+          const token = localStorage.getItem("token");
+          if (!token) {
+            commit("SET_ERROR_MESSAGE", "No authentication token");
+            return { success: false, error: "No authentication token" };
+          }
+          commit("SET_TOKEN", token);
+          axios.defaults.headers.common["x-auth-token"] = token;
         }
 
         const response = await axios.get("/api/auth/user", {
           headers: {
             "x-auth-token": state.token,
           },
+          timeout: 8000, // Increase timeout for slower networks
         });
 
         const userData = response.data;
 
         // Validate the user data
-        if (!userData || !userData.id || !userData.username) {
+        if (
+          !userData ||
+          (!userData.id && !userData._id) ||
+          !userData.username
+        ) {
           console.error("Incomplete user data received:", userData);
           commit(
             "SET_ERROR_MESSAGE",
@@ -217,15 +251,41 @@ export default new Vuex.Store({
           return { success: false, error: "Incomplete user data" };
         }
 
-        commit("SET_USER", userData);
-        return { success: true };
+        // Create a standardized user object
+        const standardizedUser = {
+          ...userData,
+          id: userData.id || userData._id,
+          _id: userData._id || userData.id,
+        };
+
+        // Store both id and _id to prevent issues
+        if (
+          typeof standardizedUser.id === "object" &&
+          standardizedUser.id.$oid
+        ) {
+          standardizedUser.id = standardizedUser.id.$oid;
+        }
+        if (
+          typeof standardizedUser._id === "object" &&
+          standardizedUser._id.$oid
+        ) {
+          standardizedUser._id = standardizedUser._id.$oid;
+        }
+
+        // Ensure both are strings
+        standardizedUser.id = String(standardizedUser.id);
+        standardizedUser._id = String(standardizedUser._id);
+
+        commit("SET_USER", standardizedUser);
+        console.log("User data fetched successfully:", standardizedUser);
+        return { success: true, user: standardizedUser };
       } catch (error) {
         console.error("Failed to fetch user data:", error);
 
         // Handle token expiration
         if (error.response && error.response.status === 401) {
+          console.log("Authentication token expired. Logging out...");
           dispatch("logout");
-          router.push("/login");
         }
 
         commit("SET_ERROR_MESSAGE", "Failed to fetch user data");
@@ -282,25 +342,30 @@ export default new Vuex.Store({
     async createGame({ commit, state }) {
       commit("SET_LOADING", true);
       commit("CLEAR_ERROR_MESSAGE");
-    
+
       try {
         // Make sure the user is authenticated
         if (!state.user || !state.token) {
           commit("SET_ERROR_MESSAGE", "User not authenticated");
           return { success: false, error: "User not authenticated" };
         }
-    
+
         // Ensure we have a valid user ID and username
         const userId = state.user.id;
         const username = state.user.username;
-    
+
         if (!userId || !username) {
           commit("SET_ERROR_MESSAGE", "User information incomplete");
           return { success: false, error: "User information incomplete" };
         }
-    
-        console.log('Creating game with user ID:', userId, 'and username:', username);
-    
+
+        console.log(
+          "Creating game with user ID:",
+          userId,
+          "and username:",
+          username
+        );
+
         // Use a more robust approach with explicit error handling
         try {
           const response = await axios.post(
@@ -314,34 +379,44 @@ export default new Vuex.Store({
               timeout: 10000, // 10 second timeout
             }
           );
-    
-          console.log('Game creation API response:', response.data);
-    
+
+          console.log("Game creation API response:", response.data);
+
           if (response.data && response.data.gameId) {
             commit("SET_CURRENT_GAME_ID", response.data.gameId);
             return { success: true, gameId: response.data.gameId };
           } else {
-            console.error('Invalid server response format:', response.data);
+            console.error("Invalid server response format:", response.data);
             commit("SET_ERROR_MESSAGE", "Invalid server response format");
             return { success: false, error: "Invalid server response" };
           }
         } catch (axiosError) {
-          console.error('Axios error during game creation:', axiosError);
-          
+          console.error("Axios error during game creation:", axiosError);
+
           if (axiosError.response) {
             // The server responded with an error
-            const errorMsg = axiosError.response.data?.msg || 
-                             `Server error: ${axiosError.response.status}`;
+            const errorMsg =
+              axiosError.response.data?.msg ||
+              `Server error: ${axiosError.response.status}`;
             commit("SET_ERROR_MESSAGE", errorMsg);
             return { success: false, error: errorMsg };
           } else if (axiosError.request) {
             // The request was made but no response was received
-            commit("SET_ERROR_MESSAGE", "No response from server. Check your connection.");
+            commit(
+              "SET_ERROR_MESSAGE",
+              "No response from server. Check your connection."
+            );
             return { success: false, error: "Network error - no response" };
           } else {
             // Something else happened
-            commit("SET_ERROR_MESSAGE", axiosError.message || "Request setup error");
-            return { success: false, error: axiosError.message || "Unknown error" };
+            commit(
+              "SET_ERROR_MESSAGE",
+              axiosError.message || "Request setup error"
+            );
+            return {
+              success: false,
+              error: axiosError.message || "Unknown error",
+            };
           }
         }
       } catch (error) {
@@ -464,52 +539,66 @@ export default new Vuex.Store({
     // Socket event handlers
     updateGameState({ commit, state }, gameState) {
       if (!gameState) return;
-      
+
       // Log detailed game state for debugging
-      console.log('Updating game state with data:', {
+      console.log("Updating game state with data:", {
         id: gameState.id,
         status: gameState.status,
         currentTurn: gameState.currentTurn,
         playerCount: gameState.players?.length || 0,
-        bettingRound: gameState.bettingRound
+        bettingRound: gameState.bettingRound,
       });
-      
+
       // Make sure important fields are present
       const enhancedGameState = { ...gameState };
-      
+
       // Force status to 'active' if players have cards but status doesn't reflect it
       if (
-        gameState.players && 
-        gameState.players.some(p => p.hasCards) && 
-        gameState.status !== 'active'
+        gameState.players &&
+        gameState.players.some((p) => p.hasCards) &&
+        gameState.status !== "active"
       ) {
-        console.log('Players have cards but game status is not active; forcing to active');
-        enhancedGameState.status = 'active';
+        console.log(
+          "Players have cards but game status is not active; forcing to active"
+        );
+        enhancedGameState.status = "active";
       }
-      
+
       // Add creator info if it's missing but we previously had it
-      if (!gameState.creator && state.currentGame && state.currentGame.creator) {
-        console.log('Preserving creator info that was missing in update');
+      if (
+        !gameState.creator &&
+        state.currentGame &&
+        state.currentGame.creator
+      ) {
+        console.log("Preserving creator info that was missing in update");
         enhancedGameState.creator = state.currentGame.creator;
       }
-      
+
       // Commit the enhanced state
-      commit('SET_CURRENT_GAME', enhancedGameState);
-      
+      commit("SET_CURRENT_GAME", enhancedGameState);
+
       // If this update includes turn info and it's the current user's turn,
       // make sure the isYourTurn flag is set
       if (
-        state.user && 
-        gameState.currentTurn && 
+        state.user &&
+        gameState.currentTurn &&
         gameState.currentTurn === state.user.id &&
         !state.isYourTurn
       ) {
-        console.log('Game state shows it is your turn, updating isYourTurn flag');
-        commit('SET_YOUR_TURN', true);
-        
+        console.log(
+          "Game state shows it is your turn, updating isYourTurn flag"
+        );
+        commit("SET_YOUR_TURN", true);
+
         // Derive available actions if needed
         if (state.availableActions.length === 0) {
-          commit('SET_AVAILABLE_ACTIONS', ['fold', 'check', 'call', 'bet', 'raise']);
+          commit("SET_AVAILABLE_ACTIONS", [
+            "fold",
+            "check",
+            "call",
+            "bet",
+            "raise",
+          ]);
         }
       }
     },
