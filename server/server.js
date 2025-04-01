@@ -29,35 +29,16 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps, curl, etc)
     if (!origin) return callback(null, true);
     
-    // Allow all localhost and local network origins
-    if (
-      origin.startsWith('http://localhost') || 
-      origin.startsWith('http://127.0.0.1') ||
-      origin.startsWith('http://192.168.') ||
-      origin.startsWith('http://10.') ||
-      origin.includes('ngrok-free.app')
-    ) {
-      return callback(null, true);
-    }
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost:8080',
+      'http://127.0.0.1:8080',
+      'https://[your-netlify-app-name].netlify.app'  // Your Netlify domain
+    ];
     
-    // For production
-    if (process.env.NODE_ENV === 'production') {
-      // Comment out or remove these lines since we're using Netlify for frontend
-      // app.use(express.static(path.join(__dirname, '../client/dist')));
-      // app.get('*', (req, res) => {
-      //   res.sendFile(path.resolve(__dirname, '../client/dist', 'index.html'));
-      // });
-      
-      // Instead, just serve the API endpoints
-      app.get('*', (req, res) => {
-        res.json({ 
-          message: 'Nyanguni Kancane API is running',
-          version: '1.0.0',
-          environment: process.env.NODE_ENV || 'production',
-          clientOrigin: req.headers.origin || 'Unknown',
-          timestamp: new Date().toISOString()
-        });
-      });
+    // Check if the origin is allowed
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('netlify.app')) {
+      return callback(null, true);
     }
     
     console.log(`CORS blocked request from origin: ${origin}`);
@@ -65,9 +46,7 @@ app.use(cors({
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With'],
-  exposedHeaders: ['Content-Length', 'X-Auth-Token'],
-  maxAge: 86400 // 24 hours caching for preflight requests
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
 }));
 
 
