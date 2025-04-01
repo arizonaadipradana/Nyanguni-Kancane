@@ -1,6 +1,4 @@
 // client/src/services/config.js
-// Modified version for proper production deployment
-
 import axios from "axios";
 
 let config = null;
@@ -9,11 +7,37 @@ let loadPromise = null;
 let lastFetchTime = 0;
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-// Production backend URL on Render.com
-const PRODUCTION_API_URL = "https://nyanguni-kancane.onrender.com";
+// Predefined backend URLs
+const BACKEND_URLS = [
+  'https://nyanguni-kancane.onrender.com',
+  'http://localhost:3000'
+];
 
 /**
- * Load application configuration with environment awareness
+ * Attempt to connect to a list of potential backend URLs
+ * @param {string[]} urls - List of URLs to try
+ * @returns {Promise<Object>} Configuration object
+ */
+async function tryUrls(urls) {
+  for (const url of urls) {
+    try {
+      const response = await axios.get(`${url}/api/config`, {
+        timeout: 5000,
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+
+      console.log(`Successfully connected to backend at: ${url}`);
+      return { ...response.data, apiUrl: url, socketUrl: url };
+    } catch (error) {
+      console.warn(`Failed to connect to ${url}:`, error.message);
+    }
+  }
+
+  throw new Error('Could not connect to any backend URL');
+}
+
+/**
+ * Load application configuration from the server with improved error handling
  * @param {boolean} forceRefresh - Force a refresh of the configuration
  * @returns {Promise<Object>} Configuration object
  */
@@ -32,129 +56,56 @@ export const loadConfig = async (forceRefresh = false) => {
   isLoading = true;
 
   loadPromise = new Promise((resolve) => {
-    const fetchConfig = async () => {
+    const loadAsync = async () => {
       try {
-        // Check if we're in a production environment (Netlify)
-        const isProduction = 
-          window.location.hostname.includes('netlify.app') || 
-          !window.location.hostname.includes('localhost');
-
-        if (isProduction) {
-          // In production, use the hardcoded Render.com backend URL
-          config = {
-            apiUrl: PRODUCTION_API_URL,
-            socketUrl: PRODUCTION_API_URL,
-            env: "production",
-            version: "1.0.0"
-          };
-          
-          console.log("Using production configuration:", config);
-          lastFetchTime = Date.now();
-          isLoading = false;
-          resolve(config);
-          return;
-        }
-
-        // For development, try to load from local config endpoint first
-        let configUrl = `${window.location.origin}/api/config`;
-        console.log("Loading configuration from current origin:", configUrl);
+        // First, try saved URLs
+        const savedUrls = [
+          localStorage.getItem('backendUrl'),
+          ...BACKEND_URLS
+        ].filter(Boolean);
 
         try {
-          const response = await axios.get(configUrl, {
-            timeout: 5000,
-            headers: { "Cache-Control": "no-cache" },
-          });
-
-          config = response.data;
-          console.log("Application configuration loaded:", config);
-          lastFetchTime = Date.now();
-          isLoading = false;
-          resolve(config);
-          return;
-        } catch (originError) {
-          console.warn(
-            "Failed to load from origin, will try fallback:",
-            originError
-          );
+          config = await tryUrls(savedUrls);
+          
+          // Save successful URL
+          localStorage.setItem('backendUrl', config.apiUrl);
+        } catch (urlError) {
+          // Fallback configuration if all URLs fail
+          config = {
+            apiUrl: window.location.origin,
+            socketUrl: window.location.origin,
+            env: 'development',
+            version: '1.0.0',
+            isFallback: true
+          };
         }
 
-        // Create fallback config with improved URL determination
-        config = {
-          apiUrl: determineServerUrl(),
-          socketUrl: determineServerUrl(),
-          env: "development",
-          version: "1.0.0",
-          isFallback: true,
-        };
-
-        console.log("Using fallback configuration:", config);
         lastFetchTime = Date.now();
-
         isLoading = false;
         resolve(config);
       } catch (error) {
-        console.error("Failed to load configuration, using defaults:", error);
-
-        // Create simple fallback config that works in all environments
-        const isProduction = 
-          window.location.hostname.includes('netlify.app') || 
-          !window.location.hostname.includes('localhost');
-          
+        console.error('Configuration loading failed:', error);
+        
         config = {
-          apiUrl: isProduction ? PRODUCTION_API_URL : window.location.origin,
-          socketUrl: isProduction ? PRODUCTION_API_URL : window.location.origin,
-          env: isProduction ? "production" : "development",
-          version: "1.0.0",
+          apiUrl: window.location.origin,
+          socketUrl: window.location.origin,
+          env: 'development',
+          version: '1.0.0',
           isFallback: true,
+          error: error.message
         };
 
-        console.log("Using emergency fallback configuration:", config);
         lastFetchTime = Date.now();
-
         isLoading = false;
         resolve(config);
       }
     };
 
-    fetchConfig();
+    loadAsync();
   });
 
   return loadPromise;
 };
-
-/**
- * Intelligently determine the server URL based on client URL
- * @returns {string} Best guess of server URL
- */
-function determineServerUrl() {
-  const hostname = window.location.hostname;
-  
-  // Check if we're in production (Netlify)
-  if (hostname.includes('netlify.app')) {
-    return PRODUCTION_API_URL;
-  }
-
-  // Use the current origin as default for development
-  const currentOrigin = window.location.origin;
-
-  // For development with devices on local network
-  if (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname.match(/192\.168\./) ||
-    hostname.match(/10\./)
-  ) {
-    // If we're not running on port 3000, we're likely using Vue devserver with proxy
-    if (window.location.port !== "3000") {
-      console.log("Using current origin with proxy:", currentOrigin);
-      return currentOrigin;
-    }
-    return "http://localhost:3000"; // Default local API server port
-  }
-
-  // For any other environment, use the hardcoded production URL
-  return PRODUCTION_API_URL;
-}
 
 /**
  * Reset the loaded configuration (useful for testing)
@@ -164,6 +115,7 @@ export const resetConfig = () => {
   isLoading = false;
   loadPromise = null;
   lastFetchTime = 0;
+  localStorage.removeItem('backendUrl');
 };
 
 /**
@@ -182,10 +134,6 @@ export const getConfigValue = async (key, defaultValue = null) => {
  * @returns {Promise<Object>} Fresh configuration
  */
 export const refreshConfig = async () => {
+  localStorage.removeItem('backendUrl');
   return loadConfig(true);
 };
-
-// Export a default function that returns the config
-export default async function getConfig() {
-  return loadConfig();
-}

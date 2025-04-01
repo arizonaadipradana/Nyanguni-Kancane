@@ -26,18 +26,12 @@ const server = http.createServer(app);
 // CORS middleware - improved with dynamic origin detection
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc)
-    if (!origin) return callback(null, true);
-    
-    // List of allowed origins
-    const allowedOrigins = [
-      'http://localhost:8080',
-      'http://127.0.0.1:8080',
-      'https://nyanguni-kancane.netlify.app'  // Your Netlify domain
-    ];
-    
-    // Check if the origin is allowed
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('netlify.app')) {
+    // Allow all Netlify domains
+    if (origin && (
+      origin.includes('.netlify.app') || 
+      origin.includes('localhost') || 
+      origin.startsWith('https://nyanguni-kancane')
+    )) {
       return callback(null, true);
     }
     
@@ -45,7 +39,6 @@ app.use(cors({
     callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
 }));
 
