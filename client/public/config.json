@@ -1,6 +1,7 @@
 {
-    "apiUrl": "YOUR_RENDER_BACKEND_URL",
-    "socketUrl": "YOUR_RENDER_BACKEND_URL",
-    "env": "production",
-    "version": "1.0.0"
-  }
+  "apiUrl": "https://nyanguni-kancane-api.onrender.com",
+  "socketUrl": "https://nyanguni-kancane-api.onrender.com",
+  "env": "production",
+  "version": "1.0.0",
+  "timestamp": "2025-04-01T18:26:51.027Z"
+}

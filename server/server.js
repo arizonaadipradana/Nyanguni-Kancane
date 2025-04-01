@@ -42,17 +42,22 @@ app.use(cors({
     
     // For production
     if (process.env.NODE_ENV === 'production') {
-      // Extract hostname from origin
-      try {
-        const hostname = new URL(origin).hostname;
-        
-        // Check if origin matches our allowed domains
-        if (hostname === 'yourdomain.com' || hostname.endsWith('.yourdomain.com')) {
-          return callback(null, true);
-        }
-      } catch (e) {
-        console.error('Error parsing origin URL:', e);
-      }
+      // Comment out or remove these lines since we're using Netlify for frontend
+      // app.use(express.static(path.join(__dirname, '../client/dist')));
+      // app.get('*', (req, res) => {
+      //   res.sendFile(path.resolve(__dirname, '../client/dist', 'index.html'));
+      // });
+      
+      // Instead, just serve the API endpoints
+      app.get('*', (req, res) => {
+        res.json({ 
+          message: 'Nyanguni Kancane API is running',
+          version: '1.0.0',
+          environment: process.env.NODE_ENV || 'production',
+          clientOrigin: req.headers.origin || 'Unknown',
+          timestamp: new Date().toISOString()
+        });
+      });
     }
     
     console.log(`CORS blocked request from origin: ${origin}`);
