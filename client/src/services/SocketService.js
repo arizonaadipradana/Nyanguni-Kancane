@@ -359,8 +359,9 @@ class SocketService {
    * @param {string} userId - User ID
    * @returns {Promise} Promise that resolves when update is received
    */
-  requestGameUpdate(gameId, userId) {
+  async requestGameUpdate(gameId, userId) {
     return new Promise((resolve) => {
+      // Implementation of throttling for socket requests
       if (!gameId) {
         console.warn("Cannot request game update - gameId is required");
         resolve(false);
@@ -388,7 +389,8 @@ class SocketService {
       const now = Date.now();
       const lastUpdate = lastUpdateTime[gameId] || 0;
 
-      if (now - lastUpdate < 2000) {
+      if (now - lastUpdate < 3000) {
+        // Increased from 2000 to 3000ms
         console.log("Throttling game update request");
         resolve(false);
         return;
@@ -407,13 +409,13 @@ class SocketService {
         this.gameSocket.off("gameUpdate", onGameUpdate);
       };
 
-      // Add a timeout for the request
+      // Add a timeout for the request - increased to 8 seconds
       const timeoutId = setTimeout(() => {
         // Renamed to timeoutId to make clear we're using it
         console.log("Game update request timed out");
         this.gameSocket.off("gameUpdate", onGameUpdate);
         resolve(false);
-      }, 5000);
+      }, 8000);
 
       // Listen for the game update event
       this.gameSocket.once("gameUpdate", onGameUpdate);
@@ -513,10 +515,10 @@ class SocketService {
    */
   setupGameListeners() {
     if (!this.gameSocket) return;
-  
+
     // Track message IDs to prevent duplicates
     const processedMessageIds = new Set();
-  
+
     // Define events to listen for
     const events = [
       "gameUpdate",
@@ -537,12 +539,12 @@ class SocketService {
       "gameError",
       "playerConnectionChange",
     ];
-  
+
     // Register listeners for each event
     events.forEach((event) => {
       // Remove any existing listeners to prevent duplicates
       this.gameSocket.off(event);
-  
+
       // Add new listener that will emit to our own events system with error handling
       this.gameSocket.on(event, (data) => {
         try {
@@ -555,7 +557,7 @@ class SocketService {
               );
               return;
             }
-  
+
             // Add to processed set and limit its size
             processedMessageIds.add(data.messageId);
             if (processedMessageIds.size > 100) {
@@ -564,17 +566,17 @@ class SocketService {
               processedMessageIds.delete(iterator.next().value);
             }
           }
-  
+
           // Try to parse the received data if it's a string
           let parsedData = data;
-          if (typeof data === 'string') {
+          if (typeof data === "string") {
             try {
               parsedData = JSON.parse(data);
             } catch (e) {
               // Not JSON, use as is
             }
           }
-  
+
           // Emit the event to our own event system
           this.emit(event, parsedData);
         } catch (error) {
@@ -621,23 +623,23 @@ class SocketService {
   }
 
   /**
- * Emit an event
- * @param {string} event - Event name
- * @param {any} data - Event data
- */
-emit(event, data) {
-  if (!this.events[event]) return;
-  
-  // Loop through handlers with try/catch for each one
-  this.events[event].forEach(callback => {
-    try {
-      callback(data);
-    } catch (error) {
-      console.error(`Error in ${event} handler:`, error);
-      // Continue to next handler instead of breaking the chain
-    }
-  });
-}
+   * Emit an event
+   * @param {string} event - Event name
+   * @param {any} data - Event data
+   */
+  emit(event, data) {
+    if (!this.events[event]) return;
+
+    // Loop through handlers with try/catch for each one
+    this.events[event].forEach((callback) => {
+      try {
+        callback(data);
+      } catch (error) {
+        console.error(`Error in ${event} handler:`, error);
+        // Continue to next handler instead of breaking the chain
+      }
+    });
+  }
 
   /**
    * Get connection status

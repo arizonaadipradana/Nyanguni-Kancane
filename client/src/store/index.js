@@ -6,6 +6,18 @@ import router from "../router";
 
 Vue.use(Vuex);
 
+// Utility to throttle updates to avoid excessive re-renders
+const throttle = (callback, delay) => {
+  let lastCall = 0;
+  return function(...args) {
+    const now = Date.now();
+    if (now - lastCall >= delay) {
+      lastCall = now;
+      return callback.apply(this, args);
+    }
+  };
+};
+
 export default new Vuex.Store({
   state: {
     user: null,
@@ -144,6 +156,11 @@ export default new Vuex.Store({
 
     FORCE_UPDATE_CARDS(state, cards) {
       if (!cards || !Array.isArray(cards)) return;
+
+      console.log(
+        "FORCE_UPDATE_CARDS called with:",
+        cards.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+      );
 
       // Reset the array
       state.playerHand.length = 0;

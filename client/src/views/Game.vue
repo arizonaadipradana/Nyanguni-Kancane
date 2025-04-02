@@ -37,7 +37,7 @@
           :formatCard="formatCard" />
 
         <!-- Players -->
-        <PlayerList :players="getVisiblePlayers()" :currentUser="currentUser"
+        <PlayerList ref="playerList" :players="getVisiblePlayers()" :currentUser="currentUser"
           :currentTurn="currentGame ? currentGame.currentTurn : null" :playerHand="playerHand"
           :formatCard="formatCard" />
 
@@ -190,10 +190,15 @@ export default {
       isYourTurn: false,
       showWinnerDisplay: false,
       currentHandResult: null,
-      isReconnecting: false, // Add this missing property
-      availableActions: [],
+      isReconnecting: false,
+      // Remove or comment out availableActions here if it exists
+      // availableActions: [], 
       cardRefreshInterval: null,
       showPlayerDebug: false,
+      // Add these new properties for caching and throttling
+      _lastPlayerUpdate: 0,
+      _lastPlayerResult: null,
+      _lastServerUpdate: 0
     };
   },
 
@@ -659,6 +664,14 @@ export default {
     },
 
     requestStateUpdate() {
+      // Prevent excessive updates with throttling
+      const now = Date.now();
+      if (this._lastStateRequest && now - this._lastStateRequest < 3000) {
+        // Don't request more than once every 3 seconds
+        return;
+      }
+
+      this._lastStateRequest = now;
       this.addToLog('Requesting game state update...');
 
       if (!this.currentUser || !this.currentUser.id) {
@@ -677,12 +690,17 @@ export default {
           if (!success) {
             console.log("Socket update failed, trying API fallback");
 
-            // Fallback to API if socket fails
-            this.$store.dispatch('fetchGame', this.gameId)
-              .catch(err => {
-                console.error("API fallback also failed:", err);
-                this.SET_ERROR_MESSAGE("Failed to update game state");
-              });
+            // Fallback to API if socket fails, but only if enough time has passed
+            const apiTime = Date.now();
+            if (!this._lastApiRequest || apiTime - this._lastApiRequest > 10000) {
+              this._lastApiRequest = apiTime;
+
+              this.$store.dispatch('fetchGame', this.gameId)
+                .catch(err => {
+                  console.error("API fallback also failed:", err);
+                  this.SET_ERROR_MESSAGE("Failed to update game state");
+                });
+            }
           }
         })
         .catch(err => {
@@ -753,18 +771,41 @@ export default {
       }
     },
     forceCardUpdate() {
-      // This method manually forces all components to update
-      this.$forceUpdate();
+      // Only update if we have actual cards
+      if (!this.playerHand || this.playerHand.length === 0) {
+        return;
+      }
 
-      // Also force child components to update
-      this.$children.forEach(child => {
-        if (typeof child.$forceUpdate === 'function') {
-          child.$forceUpdate();
-        }
-      });
+      // Throttle updates to prevent excessive renders
+      const now = Date.now();
+      if (this._lastCardUpdate && now - this._lastCardUpdate < 2000) {
+        return;
+      }
+
+      this._lastCardUpdate = now;
 
       // Log for debugging
-      console.log("Forced game component update");
+      console.log("Force updating cards:", this.playerHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+
+      // Update store directly to ensure data is consistent
+      this.$store.commit('FORCE_UPDATE_CARDS', this.playerHand);
+
+      // Only force update if needed
+      this.$forceUpdate();
+
+      // Update child components less aggressively
+      this.$nextTick(() => {
+        // Only update components that need card data
+        const cardComponents = this.$children.filter(child =>
+          child.$options.name === 'PlayerList' ||
+          child.$options.name === 'CommunityCards');
+
+        cardComponents.forEach(child => {
+          if (typeof child.$forceUpdate === 'function') {
+            child.$forceUpdate();
+          }
+        });
+      });
     },
     handleHandResult(result) {
       console.log("Hand result received:", result);
@@ -827,22 +868,96 @@ export default {
       }
     },
     async setupSocketConnection() {
-      const result = await this._originalSetupSocketConnection();
+      try {
+        // Initialize the socket service and connect to the game
+        await SocketService.init();
 
-      // Add custom reconnection handling
-      if (result && SocketService.gameSocket) {
-        // Setup reconnection handlers
-        if (typeof SocketService.setupReconnectionHandlers === 'function') {
-          SocketService.setupReconnectionHandlers();
-        }
+        // Join the game room
+        await SocketService.joinGame(
+          this.gameId,
+          this.currentUser.id,
+          this.currentUser.username
+        );
 
-        // Check for pending reconnection
-        if (typeof SocketService.checkForPendingReconnection === 'function') {
-          this.checkForReconnection();
-        }
+        // Update the isConnected flag based on the SocketService status
+        this.isConnected = SocketService.isSocketConnected();
+        this.addToLog('Connected to game server');
+
+        // Create socket event handlers
+        this.handlers = GameHandlers.createHandlers(this);
+
+        // Register event handlers - using named variables to help with debugging
+        const events = [
+          'gameUpdate', 'gameStarted', 'playerJoined', 'playerLeft',
+          'chatMessage', 'dealCards', 'yourTurn', 'turnChanged',
+          'actionTaken', 'dealFlop', 'dealTurn', 'dealRiver',
+          'handResult', 'newHand', 'gameEnded', 'gameError',
+          'creatorInfo', 'forceCardUpdate',
+        ];
+
+        // Clear any existing event handlers first to prevent duplicates
+        this.eventHandlers.forEach(({ event, handler }) => {
+          SocketService.off(event, handler);
+        });
+        this.eventHandlers = [];
+
+        // Register all handlers
+        events.forEach(event => {
+          const handlerName = `handle${event.charAt(0).toUpperCase() + event.slice(1)}`;
+          if (this.handlers[handlerName]) {
+            const handler = this.handlers[handlerName];
+
+            // Log for debugging
+            console.log(`Registering handler for ${event} event`);
+
+            // Register the handler
+            SocketService.on(event, handler);
+
+            // Track for cleanup
+            this.eventHandlers.push({ event, handler });
+          } else {
+            console.log(`No handler found for ${event} event`);
+          }
+        });
+
+        // Add explicit handlers for connection events
+        SocketService.gameSocket.on('connect', () => {
+          console.log('Socket connected event received');
+          this.isConnected = true;
+          this.addToLog('Connected to game server');
+
+          // Request an immediate game state update when connected
+          this.requestStateUpdate();
+        });
+
+        // Add a disconnect listener
+        SocketService.gameSocket.on('disconnect', () => {
+          console.log('Socket disconnected event received');
+          this.isConnected = false;
+          this.addToLog('Disconnected from game server');
+        });
+
+        // Set up periodic game state updates to ensure UI stays in sync
+        this.setupPeriodicUpdates();
+
+        // Request an initial game state update
+        this.requestGameState();
+
+        return true;
+      } catch (error) {
+        console.error('Error setting up socket connection:', error);
+        this.addToLog('Failed to connect to game server');
+        this.isConnected = false;
+
+        // Set up auto-reconnect
+        setTimeout(() => {
+          if (!this.isConnected) {
+            console.log('Attempting to reconnect...');
+            this.setupSocketConnection();
+          }
+        }, 3000);
+        return false;
       }
-
-      return result;
     },
 
     async diagnoseAndFix() {
@@ -1196,38 +1311,69 @@ export default {
       // No game loaded yet
       if (!this.currentGame) return [];
 
-      // Start with the regular players array
-      let players = this.currentGame.players || [];
-
-      // If we have allPlayers array (from enhanced server response), merge with players
-      if (this.currentGame.allPlayers && Array.isArray(this.currentGame.allPlayers)) {
-        // Create a set of existing player IDs for fast lookup
-        const existingPlayerIds = new Set(players.map(p => p.id));
-
-        // Add any players from allPlayers that aren't already in players
-        this.currentGame.allPlayers.forEach(player => {
-          if (!existingPlayerIds.has(player.id)) {
-            // Create a full player object with default values
-            players.push({
-              id: player.id,
-              username: player.username,
-              chips: 0,
-              totalChips: 0,
-              hasCards: false,
-              hasFolded: false,
-              hasActed: false,
-              isAllIn: false,
-              isActive: player.isActive !== undefined ? player.isActive : true,
-              position: player.position || 0
-            });
-            console.log(`Added missing player to display: ${player.username}`);
-          }
-        });
+      // Use a throttled update approach to prevent infinite loops
+      const now = Date.now();
+      if (this._lastPlayerUpdate && now - this._lastPlayerUpdate < 1000) {
+        // If we updated in the last second, return the cached result
+        return this._lastPlayerResult || [];
       }
 
-      // Log the players we're displaying
-      console.log(`Displaying ${players.length} players:`,
-        players.map(p => p.username).join(', '));
+      // Start with the regular players array (make a deep copy to avoid reference issues)
+      let players = [];
+
+      if (this.currentGame.players && Array.isArray(this.currentGame.players)) {
+        // Create deep copies of player objects to avoid reference issues
+        players = this.currentGame.players.map(p => ({ ...p }));
+      }
+
+      // If we have allPlayers array, use it as our source of truth
+      if (this.currentGame.allPlayers && Array.isArray(this.currentGame.allPlayers) &&
+        this.currentGame.allPlayers.length > 0) {
+
+        // Create a lookup map of existing players by ID for merging data
+        const existingPlayers = new Map();
+        players.forEach(player => {
+          if (player.id) {
+            existingPlayers.set(player.id, player);
+          }
+        });
+
+        // Reset players array using allPlayers and merge with existing data
+        players = this.currentGame.allPlayers.map(player => {
+          // If we already have this player, merge the data to preserve details
+          if (player.id && existingPlayers.has(player.id)) {
+            const existingPlayer = existingPlayers.get(player.id);
+            return {
+              ...existingPlayer,
+              // Ensure these key fields are always updated from allPlayers
+              username: player.username,
+              isActive: player.isActive !== undefined ? player.isActive : true
+            };
+          }
+
+          // Otherwise create a new player object with defaults
+          return {
+            id: player.id,
+            username: player.username,
+            chips: player.chips || 0,
+            totalChips: player.totalChips || 0,
+            hasCards: player.hasCards || false,
+            hasFolded: player.hasFolded || false,
+            hasActed: player.hasActed || false,
+            isAllIn: player.isAllIn || false,
+            isActive: player.isActive !== undefined ? player.isActive : true,
+            position: player.position || 0
+          };
+        });
+
+        // Log once per update
+        console.log(`Using allPlayers array with ${players.length} players for display:`,
+          players.map(p => p.username).join(', '));
+      }
+
+      // Store last update time and result for throttling
+      this._lastPlayerUpdate = now;
+      this._lastPlayerResult = players;
 
       return players;
     },
@@ -1278,6 +1424,36 @@ export default {
         }
       }, 2000);
     },
+    setupPeriodicUpdates() {
+      // Clear any existing update interval
+      if (this.gameUpdateInterval) {
+        clearInterval(this.gameUpdateInterval);
+      }
+
+      // Set up a new interval for regular game state updates with throttling
+      this.gameUpdateInterval = setInterval(() => {
+        const now = Date.now();
+
+        // Only request updates at most every 5 seconds to prevent overloading
+        if (!this._lastServerUpdate || now - this._lastServerUpdate > 5000) {
+          if (this.isConnected && this.currentUser && this.gameId) {
+            // Only request update if we're connected and have the necessary info
+            this._lastServerUpdate = now;
+            this.requestStateUpdate();
+          }
+        }
+      }, 10000); // Check every 10 seconds instead of 5
+    },
+    throttle(func, delay) {
+      let lastCall = 0;
+      return function (...args) {
+        const now = Date.now();
+        if (now - lastCall >= delay) {
+          lastCall = now;
+          return func.apply(this, args);
+        }
+      };
+    },
   },
 
   created() {
@@ -1290,7 +1466,7 @@ export default {
     console.log(`Initializing game with ID: ${this.gameId}`);
   },
 
-  async mounted() {
+  mounted() {
     // Get token from localStorage 
     const token = localStorage.getItem('token');
     const isAuthenticated = !!token;
@@ -1366,6 +1542,44 @@ export default {
         this.forceCardUpdate();
       }
     }, 2000); // Check every 2 seconds
+    this.$watch('currentGame.players', (newVal, oldVal) => {
+      if (!newVal || !oldVal) return;
+
+      // Check if player count has changed
+      if (newVal.length !== oldVal.length) {
+        console.log(`Player count changed: ${oldVal.length} -> ${newVal.length}`);
+
+        // Force player list redraw
+        this.$nextTick(() => {
+          if (this.$refs.playerList && typeof this.$refs.playerList.forceUpdate === 'function') {
+            this.$refs.playerList.forceUpdate();
+          }
+        });
+      }
+    }, { deep: true });
+    // Watch playerHand for changes
+    this.$watch('playerHand', (newHand) => {
+      if (newHand && newHand.length > 0) {
+        console.log('Player hand changed:',
+          newHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+
+        // Force UI update
+        this.forceCardUpdate();
+      }
+    }, { deep: true });
+    if (this.$options.computed.availableActions && 'availableActions' in this) {
+      // If both exist, prioritize the computed property and remove the data property
+      console.log('Fixing availableActions conflict - using computed property');
+      this._availableActions = this.availableActions;
+      delete this.availableActions;
+
+      // Re-establish the computed property
+      Object.defineProperty(this, 'availableActions', {
+        get: this.$options.computed.availableActions.get.bind(this),
+        set: (val) => { this._availableActions = val; }
+      });
+    }
+    this.throttledForceUpdate = this.throttle(this.$forceUpdate.bind(this), 1000);
   },
 
   beforeDestroy() {

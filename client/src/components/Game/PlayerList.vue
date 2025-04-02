@@ -86,11 +86,11 @@ export default {
     // Find the host ID (first player or player with position 0)
     hostId() {
       if (!this.players || this.players.length === 0) return null;
-      
+
       // Try to find player with position 0
       const hostPlayer = this.players.find(p => p.position === 0);
       if (hostPlayer) return hostPlayer.id;
-      
+
       // Fallback to first player in the array
       return this.players[0].id;
     },
@@ -127,12 +127,12 @@ export default {
       },
       deep: true
     },
-    
+
     // Watch players array for changes
     players: {
       handler(newPlayers, oldPlayers) {
         if (!oldPlayers || !newPlayers) return;
-        
+
         // Check if player count changed
         if (newPlayers.length !== oldPlayers.length) {
           console.log(`PlayerList: Player count changed from ${oldPlayers.length} to ${newPlayers.length}`);
@@ -144,13 +144,28 @@ export default {
   },
 
   mounted() {
+    // Stop immediate re-renders to prevent infinite loops
+    this._forceUpdateCount = 0;
+
     console.log('PlayerList mounted with players:', this.players);
     console.log('CurrentUser in PlayerList:', this.currentUser);
     console.log('Initial playerHand:', this.playerHand);
 
-    // Set up periodic checks for updates
+    // Set up periodic checks for updates that are throttled
     this.updateInterval = setInterval(() => {
       this.updateKey++; // Force re-render periodically
+
+      // Increment the counter but no more than once per 5 seconds
+      const now = Date.now();
+      if (!this._lastUpdate || now - this._lastUpdate > 5000) {
+        this._lastUpdate = now;
+        this._forceUpdateCount++;
+
+        // Only log occasionally to prevent console spam
+        if (this._forceUpdateCount % 5 === 0) {
+          console.log('PlayerList periodic update', this._forceUpdateCount);
+        }
+      }
     }, 5000);
   },
 
@@ -163,11 +178,17 @@ export default {
   methods: {
     // Add a method to force update
     forceUpdate() {
-      this.updateKey++;
-      this.lastHandUpdate = Date.now();
-      console.log('PlayerList forced update');
+      const now = Date.now();
+
+      // Only allow updates every 1 second at most
+      if (!this._lastForceUpdate || now - this._lastForceUpdate > 1000) {
+        this._lastForceUpdate = now;
+        this.updateKey++;
+        this.lastHandUpdate = now;
+        console.log('PlayerList forced update');
+      }
     },
-    
+
     // Log player details to console for debugging
     logPlayerDetails(player) {
       if (this.isDevelopment) {

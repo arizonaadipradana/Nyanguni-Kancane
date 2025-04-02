@@ -14,24 +14,58 @@ const gameLogic = {
 
   // Start a new hand
   async startNewHand(game) {
+    // Check if this is a restart of an existing hand - don't deal new cards if players already have them
+    const playersHaveCards = game.players.some(player => player.hand && player.hand.length > 0);
+    
+    if (playersHaveCards) {
+      console.log(`Players already have cards, skipping card dealing in startNewHand`);
+      
+      // Just reset other game state elements but don't deal new cards
+      game.bettingRound = "preflop";
+      
+      // Set blinds positions if they're not already set
+      if (game.smallBlindPosition === undefined || game.bigBlindPosition === undefined) {
+        this.setBlindPositions(game);
+        
+        // Set blinds
+        const smallBlindPlayer = game.players[game.smallBlindPosition];
+        const bigBlindPlayer = game.players[game.bigBlindPosition];
+        
+        // Small blind is half the minimum bet, big blind is the minimum bet
+        await this.placeBet(game, smallBlindPlayer.user.toString(), game.minBet / 2);
+        await this.placeBet(game, bigBlindPlayer.user.toString(), game.minBet);
+      }
+      
+      // Make sure currentTurn is set correctly
+      if (!game.currentTurn) {
+        game.currentTurn = this.getNextActivePlayerAfter(game, game.bigBlindPosition);
+      }
+      
+      // Save the updated game
+      game._skipValidation = true;
+      await game.save();
+      
+      return game;
+    }
+    
     // Reset game state for new hand
     game.pot = 0;
     game.communityCards = [];
-
+  
     // CRITICAL FIX: Always create a completely new, properly shuffled deck
-    const cardDeck = require("./cardDeck");
-
+    const cardDeck = require('./cardDeck');
+  
     // Use the enhanced getFreshShuffledDeck function for maximum randomness
     game.deck = cardDeck.getFreshShuffledDeck();
-
+  
     // Log the deck stats for verification
     const deckStats = cardDeck.getDeckStats(game.deck);
     console.log(`New hand deck stats:`, deckStats);
-
+  
     game.currentBet = 0;
     game.handNumber += 1;
     game.bettingRound = "preflop";
-
+  
     // Reset player states
     game.players.forEach((player) => {
       player.hand = [];
@@ -1458,13 +1492,13 @@ const gameLogic = {
         communityCards: []
       };
     }
-  
+    
     try {
       // First ensure all player IDs are properly formatted as strings
       const sanitizedPlayers = (game.players || []).map((player) => {
         // Skip invalid players
         if (!player || !player.user) return null;
-  
+    
         // Extract the player ID based on its type
         let playerId;
         if (typeof player.user === 'string') {
@@ -1476,7 +1510,7 @@ const gameLogic = {
         } else {
           playerId = String(player.user);
         }
-  
+    
         return {
           id: playerId,
           username: player.username || 'Unknown Player',
@@ -1491,7 +1525,16 @@ const gameLogic = {
         };
       })
       .filter(player => player !== null); // Remove any invalid players
-    
+      
+      // Create a separate allPlayers array that includes all players
+      const allPlayers = sanitizedPlayers.map(player => ({
+        id: player.id,
+        username: player.username,
+        isActive: player.isActive,
+        position: player.position || 0,
+        hasCards: player.hasCards
+      }));
+      
       // Format the current turn ID consistently
       let currentTurnId = null;
       if (game.currentTurn) {
@@ -1505,7 +1548,7 @@ const gameLogic = {
           currentTurnId = String(game.currentTurn);
         }
       }
-  
+    
       // Format creator info
       let creator = null;
       if (game.creator && game.creator.user) {
@@ -1518,7 +1561,7 @@ const gameLogic = {
           username: game.creator.username || 'Unknown Creator'
         };
       }
-  
+    
       // Create and return the sanitized game state
       return {
         id: game.gameId,
@@ -1533,6 +1576,8 @@ const gameLogic = {
         bettingRound: game.bettingRound || 'preflop',
         creator: creator,
         players: sanitizedPlayers,
+        // Always include allPlayers in the state to ensure all clients know about all players
+        allPlayers: allPlayers, 
         actionHistory: (game.actionHistory || []).slice(-10), // Last 10 actions
         lastUpdated: new Date().toISOString() // Add a timestamp to help with debugging
       };

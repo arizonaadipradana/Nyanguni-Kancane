@@ -262,27 +262,30 @@ module.exports = (io) => {
         console.log(`Game update for ${gameId}:`, {
           status: sanitizedGame.status,
           playerCount: sanitizedGame.players.length,
-          players: sanitizedGame.players.map(p => ({
+          players: sanitizedGame.players.map((p) => ({
             id: p.id,
-            username: p.username
-          }))
+            username: p.username,
+          })),
         });
-        
+
         // Ensure creator property is explicitly set for everyone
         if (!sanitizedGame.creator && latestGame.creator) {
           console.log(`Adding missing creator info to game ${gameId}`);
           sanitizedGame.creator = {
             user: latestGame.creator.user.toString(),
-            username: latestGame.creator.username
+            username: latestGame.creator.username,
           };
         }
-        
+
         // Important - make sure this is visible to all clients including the host
-        sanitizedGame.allPlayers = sanitizedGame.players.map(p => ({
-          id: p.id,
+        sanitizedGame.allPlayers = latestGame.players.map((p) => ({
+          id: p.user.toString(),
           username: p.username,
-          isActive: p.isActive
-        }));        
+          isActive: p.isActive,
+          totalChips: p.totalChips || 0,
+          hasCards: p.hand && p.hand.length > 0,
+          position: p.position || 0,
+        }));
 
         // Emit game update to everyone
         gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
@@ -372,6 +375,8 @@ module.exports = (io) => {
 
         // Send game state to ALL clients in the room to ensure everyone is in sync
         const sanitizedGame = gameLogic.getSanitizedGameState(game);
+
+        // Log which players are being sent
         console.log(`Game update for ${gameId}:`, {
           status: sanitizedGame.status,
           playerCount: sanitizedGame.players.length,
@@ -381,29 +386,46 @@ module.exports = (io) => {
           })),
         });
 
-        // Ensure creator property is explicitly set for everyone
-        if (!sanitizedGame.creator && latestGame.creator) {
-          console.log(`Adding missing creator info to game ${gameId}`);
-          sanitizedGame.creator = {
-            user: latestGame.creator.user.toString(),
-            username: latestGame.creator.username,
-          };
+        // IMPORTANT: Always include all players in the update
+        if (!sanitizedGame.allPlayers) {
+          sanitizedGame.allPlayers = sanitizedGame.players.map((p) => ({
+            id: p.id,
+            username: p.username,
+            isActive: p.isActive,
+            position: p.position || 0,
+            hasCards: p.hasCards || false,
+          }));
         }
 
-        // Important - make sure this is visible to all clients including the host
-        sanitizedGame.allPlayers = sanitizedGame.players.map((p) => ({
-          id: p.id,
-          username: p.username,
-          isActive: p.isActive,
-        }));
+        // Always add this for debugging
+        sanitizedGame.updateTime = Date.now();
 
+        // Send to entire room
         gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
 
         // If userId is provided, send their personal cards too
         if (userId) {
           const player = game.players.find((p) => p.user.toString() === userId);
           if (player && player.hand && player.hand.length > 0) {
-            socket.emit("dealCards", { hand: player.hand });
+            // Log for debugging
+            console.log(
+              `Sending cards to ${player.username}:`,
+              player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+            );
+
+            // Create a clean copy of the cards to avoid reference issues
+            const cleanHand = player.hand.map((card) => ({
+              suit: card.suit,
+              rank: card.rank,
+              value: card.value,
+              code: card.code,
+              _timestamp: Date.now(), // Add timestamp to force client refresh
+            }));
+
+            socket.emit("dealCards", {
+              hand: cleanHand,
+              timestamp: Date.now(),
+            });
           }
 
           // If it's this player's turn, make sure they know
@@ -418,12 +440,14 @@ module.exports = (io) => {
               socket.emit("yourTurn", {
                 options: gameLogic.getPlayerOptions(game, userId),
                 timeLimit: 30, // 30 seconds to make a decision
+                timestamp: Date.now(), // Add timestamp for uniqueness
               });
 
               // Also broadcast to everyone whose turn it is
               gameIo.to(gameId).emit("turnChanged", {
                 playerId: userId,
                 username: currentPlayer.username,
+                timestamp: Date.now(),
               });
 
               console.log(
@@ -490,8 +514,10 @@ module.exports = (io) => {
         );
 
         // IMPORTANT FIX: Create a completely fresh deck with enhanced shuffling
-        const cardDeck = require("../utils/cardDeck");
-        game.deck = cardDeck.getFreshShuffledDeck();
+        game.deck = require("../utils/cardDeck").getFreshShuffledDeck();
+        console.log(
+          `Game ${gameId} initialized with a fresh deck of ${game.deck.length} cards`
+        );
 
         // Log deck statistics to verify proper shuffling
         const deckStats = cardDeck.getDeckStats(game.deck);
@@ -518,12 +544,38 @@ module.exports = (io) => {
           const updatedGame = await gameLogic.startNewHand(game);
           console.log(`First hand started for game ${gameId}`);
 
-          // Log the cards dealt to each player for verification
-          updatedGame.players.forEach((player) => {
-            if (player.hand && player.hand.length) {
+          // Emit private cards to each player
+          game.players.forEach((player) => {
+            if (!player.hand || player.hand.length === 0) {
+              console.error(`Player ${player.username} has no cards!`);
+              return;
+            }
+
+            const socketId = userSockets.get(player.user.toString());
+            if (socketId) {
+              // Create a clean copy of the hand to prevent references
+              const cleanHand = player.hand.map((card) => ({
+                suit: card.suit,
+                rank: card.rank,
+                value: card.value,
+                code: card.code,
+                _timestamp: Date.now(), // Add timestamp to force client reactivity
+              }));
+
               console.log(
-                `Player ${player.username} cards:`,
-                player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+                `EXPLICITLY sending cards to ${player.username}:`,
+                cleanHand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+              );
+
+              // Send with a distinct event name and timestamp to ensure processing
+              gameIo.to(socketId).emit("dealCards", {
+                hand: cleanHand,
+                newHand: true, // Add a flag to indicate this is from a new hand
+                timestamp: Date.now(), // Add timestamp to force client to process as new
+              });
+            } else {
+              console.error(
+                `Could not find socket for player ${player.username}`
               );
             }
           });
@@ -559,12 +611,16 @@ module.exports = (io) => {
           for (const player of updatedGame.players) {
             const socketId = userSockets.get(player.user.toString());
             if (socketId) {
+              // Log card sending for debugging
               console.log(
                 `Sending cards to player ${player.username}:`,
                 player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
               );
+
+              // Include a timestamp to ensure client treats this as a new event
               gameIo.to(socketId).emit("dealCards", {
                 hand: player.hand,
+                timestamp: Date.now(),
               });
             } else {
               console.log(
@@ -588,31 +644,52 @@ module.exports = (io) => {
             if (currentPlayer) {
               const socketId = userSockets.get(currentPlayer.user.toString());
               if (socketId) {
-                gameIo.to(socketId).emit("yourTurn", {
-                  options: gameLogic.getPlayerOptions(
+                console.log(
+                  `Notifying ${currentPlayer.username} that it's their turn`
+                );
+
+                // Make sure we have valid options
+                let playerOptions = [];
+                try {
+                  playerOptions = gameLogic.getPlayerOptions(
                     gameWithBetting,
                     currentPlayer.user
-                  ),
-                  timeLimit: 30, // 30 seconds to make a decision
+                  );
+                  console.log(
+                    `Available options for ${currentPlayer.username}:`,
+                    playerOptions
+                  );
+                } catch (optionsError) {
+                  console.error(
+                    `Error getting player options: ${optionsError.message}`
+                  );
+                  // Provide fallback options
+                  playerOptions = ["fold", "check", "call"];
+                }
+
+                // Send the yourTurn event with timestamp to ensure it's processed as new
+                gameIo.to(socketId).emit("yourTurn", {
+                  options: playerOptions,
+                  timeLimit: 30,
+                  timestamp: Date.now(),
                 });
 
-                // Let everyone know whose turn it is
+                // Also broadcast to everyone whose turn it is
                 gameIo.to(gameId).emit("turnChanged", {
                   playerId: currentPlayer.user.toString(),
                   username: currentPlayer.username,
+                  timestamp: Date.now(),
                 });
-
-                console.log(`It's ${currentPlayer.username}'s turn`);
               } else {
-                console.log(
+                console.error(
                   `Could not find socket for current player ${currentPlayer.username}`
                 );
               }
             } else {
-              console.log(`Could not find current player in game ${gameId}`);
+              console.error(`Current turn player not found in players array`);
             }
           } else {
-            console.log(`No current turn set for game ${gameId}`);
+            console.error(`No current turn set for game ${gameId}`);
           }
 
           // Update game state for all players
@@ -1856,23 +1933,24 @@ module.exports = (io) => {
               return; // Exit the function to prevent continuing with invalid cards
             }
 
-            const allGamePlayers = updatedGame.players.map(player => ({
+            const allGamePlayers = updatedGame.players.map((player) => ({
               id: player.user.toString(),
               username: player.username,
               isActive: player.isActive,
-              position: player.position
+              position: player.position,
             }));
 
             // Add this to the sanitized game state
-const enhancedGameState = gameLogic.getSanitizedGameState(updatedGame);
-enhancedGameState.allPlayers = allGamePlayers;
+            const enhancedGameState =
+              gameLogic.getSanitizedGameState(updatedGame);
+            enhancedGameState.allPlayers = allGamePlayers;
 
-if (!enhancedGameState.creator && updatedGame.creator) {
-  enhancedGameState.creator = {
-    user: updatedGame.creator.user.toString(),
-    username: updatedGame.creator.username
-  };
-}
+            if (!enhancedGameState.creator && updatedGame.creator) {
+              enhancedGameState.creator = {
+                user: updatedGame.creator.user.toString(),
+                username: updatedGame.creator.username,
+              };
+            }
 
             // Emit game state to all players
             gameIo.to(gameId).emit("gameStarted", enhancedGameState);
