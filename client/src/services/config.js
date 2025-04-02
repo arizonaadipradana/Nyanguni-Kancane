@@ -135,8 +135,8 @@ function determineServerUrl() {
     hostname.match(/192\.168\./) ||
     hostname.match(/10\./)
   ) {
-    // If we're not running on port 3000, we're likely using Vue devserver with proxy
-    if (window.location.port !== "3000") {
+    // If we're not running on port 5000, we're likely using Vue devserver with proxy
+    if (window.location.port !== "5000") { // Updated from 3000 to 5000
       console.log("Using current origin with proxy:", currentOrigin);
       return currentOrigin;
     }

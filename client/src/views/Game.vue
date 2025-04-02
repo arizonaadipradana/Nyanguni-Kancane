@@ -449,7 +449,7 @@ export default {
           'gameUpdate', 'gameStarted', 'playerJoined', 'playerLeft',
           'chatMessage', 'dealCards', 'yourTurn', 'turnChanged',
           'actionTaken', 'dealFlop', 'dealTurn', 'dealRiver',
-          'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo'
+          'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo', 'forceCardUpdate',
         ];
 
         events.forEach(event => {
@@ -602,6 +602,20 @@ export default {
         }
       }
     },
+    forceCardUpdate() {
+      // This method manually forces all components to update
+      this.$forceUpdate();
+
+      // Also force child components to update
+      this.$children.forEach(child => {
+        if (typeof child.$forceUpdate === 'function') {
+          child.$forceUpdate();
+        }
+      });
+
+      // Log for debugging
+      console.log("Forced game component update");
+    },
   },
 
   created() {
@@ -682,9 +696,21 @@ export default {
       console.error('Error setting up game:', error);
       this.SET_ERROR_MESSAGE('Failed to load game. Please try again.');
     }
+
+    // Add a card refresh interval
+    this.cardRefreshInterval = setInterval(() => {
+      if (this.playerHand && this.playerHand.length > 0) {
+        // If we have cards, check if the UI needs updating
+        this.forceCardUpdate();
+      }
+    }, 2000); // Check every 2 seconds
   },
 
   beforeDestroy() {
+    // Clear the card refresh interval
+    if (this.cardRefreshInterval) {
+      clearInterval(this.cardRefreshInterval);
+    }
     // Remove event listeners
     this.eventHandlers.forEach(({ event, handler }) => {
       SocketService.off(event, handler);

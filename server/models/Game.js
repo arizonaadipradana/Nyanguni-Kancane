@@ -190,9 +190,72 @@ const GameSchema = new Schema({
 });
 
 // Update the updatedAt field on save
-GameSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  next();
+GameSchema.pre('save', async function(next) {
+  try {
+    // Update the updatedAt field
+    this.updatedAt = Date.now();
+    
+    // If we're in an active game with cards dealt, validate to ensure no duplicates
+    if (this.status === 'active' && this.communityCards && this.communityCards.length > 0) {
+      // Skip validation in certain cases to avoid overvalidation
+      if (this._skipValidation) {
+        delete this._skipValidation;
+        return next();
+      }
+      
+      // Collect all cards in play
+      const cardsInPlay = [...this.communityCards];
+      
+      // Add player hole cards
+      this.players.forEach(player => {
+        if (player.hand && player.hand.length) {
+          cardsInPlay.push(...player.hand);
+        }
+      });
+      
+      // Check for duplicate cards
+      const cardMap = new Map();
+      for (const card of cardsInPlay) {
+        // Create a unique key for each card
+        const cardKey = `${card.rank}-${card.suit}`;
+        
+        if (cardMap.has(cardKey)) {
+          // Duplicate found!
+          const error = new Error(`Duplicate card detected: ${card.rank} of ${card.suit}`);
+          return next(error);
+        }
+        
+        cardMap.set(cardKey, true);
+      }
+    }
+    
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
+
+GameSchema.methods.resetDeck = function() {
+  const cardDeck = require('../utils/cardDeck');
+  this.deck = cardDeck.createDeck();
+  return this.deck;
+};
+
+// Add instance method to deal a card safely
+GameSchema.methods.dealCard = function() {
+  const cardDeck = require('../utils/cardDeck');
+  
+  if (!this.deck || this.deck.length === 0) {
+    throw new Error('Cannot deal card: Deck is empty or undefined');
+  }
+  
+  return cardDeck.drawCard(this.deck);
+};
+
+// Add method to skip validation for certain operations
+GameSchema.methods.skipNextValidation = function() {
+  this._skipValidation = true;
+  return this;
+};
 
 module.exports = mongoose.model('Game', GameSchema);

@@ -13,80 +13,90 @@ export default {
     return {
       // client/src/components/Game/GameHandlers.js - Fixed turn handling
 
-/**
- * Handle game state update event with real-time UI updates
- * @param {Object} gameState - New game state
- */
-handleGameUpdate(gameState) {
-  if (!gameState) return;
-  
-  // Log detailed game state for debugging
-  console.log('Updating game state with data:', {
-    id: gameState.id,
-    status: gameState.status,
-    currentTurn: gameState.currentTurn,
-    playerCount: gameState.players?.length || 0,
-    bettingRound: gameState.bettingRound
-  });
-  
-  // Make sure important fields are present
-  const enhancedGameState = { ...gameState };
-  
-  // Force status to 'active' if players have cards but status doesn't reflect it
-  if (
-    gameState.players && 
-    gameState.players.some(p => p.hasCards) && 
-    gameState.status !== 'active'
-  ) {
-    console.log('Players have cards but game status is not active; forcing to active');
-    enhancedGameState.status = 'active';
-  }
-  
-  // Add creator info if it's missing but we previously had it
-  if (!gameState.creator && component.currentGame && component.currentGame.creator) {
-    console.log('Preserving creator info that was missing in update');
-    enhancedGameState.creator = component.currentGame.creator;
-  }
-  
-  // IMPORTANT: Check if it's no longer the current user's turn - if so, clear turn state
-  if (
-    component.isYourTurn && 
-    component.currentUser && 
-    gameState.currentTurn && 
-    gameState.currentTurn !== component.currentUser.id
-  ) {
-    console.log('Game state indicates it is no longer your turn, updating UI');
-    component.endTurn();
-  }
-  
-  // Update the game state in store
-  component.updateGameState(enhancedGameState);
-  
-  // If this update includes turn info and it's the current user's turn,
-  // make sure the isYourTurn flag is set
-  if (
-    component.currentUser && 
-    gameState.currentTurn && 
-    gameState.currentTurn === component.currentUser.id &&
-    !component.isYourTurn
-  ) {
-    console.log('Game state shows it is your turn, updating isYourTurn flag');
-    component.yourTurn({
-      options: component.getDefaultOptions ? 
-        component.getDefaultOptions() : 
-        ['fold', 'check', 'call', 'bet', 'raise']
-    });
-  }
+      /**
+       * Handle game state update event with real-time UI updates
+       * @param {Object} gameState - New game state
+       */
+      handleGameUpdate(gameState) {
+        if (!gameState) return;
 
-  // Clear any error message once we successfully receive game state
-  component.SET_ERROR_MESSAGE('');
+        // Log detailed game state for debugging
+        console.log("Updating game state with data:", {
+          id: gameState.id,
+          status: gameState.status,
+          currentTurn: gameState.currentTurn,
+          playerCount: gameState.players?.length || 0,
+          bettingRound: gameState.bettingRound,
+        });
 
-  // Log connection status
-  if (!component.isConnected) {
-    component.isConnected = true;
-    component.addToLog('Connected to game server');
-  }
-},
+        // Make sure important fields are present
+        const enhancedGameState = { ...gameState };
+
+        // Force status to 'active' if players have cards but status doesn't reflect it
+        if (
+          gameState.players &&
+          gameState.players.some((p) => p.hasCards) &&
+          gameState.status !== "active"
+        ) {
+          console.log(
+            "Players have cards but game status is not active; forcing to active"
+          );
+          enhancedGameState.status = "active";
+        }
+
+        // Add creator info if it's missing but we previously had it
+        if (
+          !gameState.creator &&
+          component.currentGame &&
+          component.currentGame.creator
+        ) {
+          console.log("Preserving creator info that was missing in update");
+          enhancedGameState.creator = component.currentGame.creator;
+        }
+
+        // IMPORTANT: Check if it's no longer the current user's turn - if so, clear turn state
+        if (
+          component.isYourTurn &&
+          component.currentUser &&
+          gameState.currentTurn &&
+          gameState.currentTurn !== component.currentUser.id
+        ) {
+          console.log(
+            "Game state indicates it is no longer your turn, updating UI"
+          );
+          component.endTurn();
+        }
+
+        // Update the game state in store
+        component.updateGameState(enhancedGameState);
+
+        // If this update includes turn info and it's the current user's turn,
+        // make sure the isYourTurn flag is set
+        if (
+          component.currentUser &&
+          gameState.currentTurn &&
+          gameState.currentTurn === component.currentUser.id &&
+          !component.isYourTurn
+        ) {
+          console.log(
+            "Game state shows it is your turn, updating isYourTurn flag"
+          );
+          component.yourTurn({
+            options: component.getDefaultOptions
+              ? component.getDefaultOptions()
+              : ["fold", "check", "call", "bet", "raise"],
+          });
+        }
+
+        // Clear any error message once we successfully receive game state
+        component.SET_ERROR_MESSAGE("");
+
+        // Log connection status
+        if (!component.isConnected) {
+          component.isConnected = true;
+          component.addToLog("Connected to game server");
+        }
+      },
 
       /**
        * Handle game started event
@@ -154,105 +164,116 @@ handleGameUpdate(gameState) {
       },
 
       /**
-       * Handle cards being dealt
+       * Handle cards being dealt with improved update
        * @param {Object} data - Card data
        */
       handleDealCards(data) {
-        // Skip if we already have cards
-        if (component.playerHand && component.playerHand.length > 0) {
-          console.log("Already have cards, ignoring duplicate dealCards event");
+        console.log("Received cards:", data);
+
+        // Force clear any existing cards first to ensure update
+        component.playerHand = [];
+
+        // Small delay to ensure state reset before setting new cards
+        setTimeout(() => {
+          // Apply the new cards
+          component.receiveCards(data);
+          component.addToLog("You have been dealt new cards");
+
+          // Force UI update
+          component.$forceUpdate();
+
+          // Mark game as initialized when we get cards
+          component.gameInitialized = true;
+          component.gameInProgress = true;
+
+          // Force the currentGame status to be 'active' if it's not already
+          if (
+            component.currentGame &&
+            component.currentGame.status !== "active"
+          ) {
+            component.$set(component.currentGame, "status", "active");
+            component.addToLog("Game status updated to active");
+          }
+
+          // Clear any lingering error messages
+          component.clearErrorMessage();
+
+          // Request a full game state update to ensure UI is in sync
+          setTimeout(() => {
+            component.requestStateUpdate();
+          }, 500);
+        }, 100);
+      },
+
+      /**
+       * Handle your turn event with better lifecycle and validation
+       * @param {Object} data - Turn data with available options
+       */
+      handleYourTurn(data) {
+        // Check if we're already processing a turn or the state doesn't match
+        if (component.currentGame && component.currentUser) {
+          const currentTurnId = component.currentGame.currentTurn;
+          const userId = component.currentUser.id;
+
+          // Validate that this turn matches the game state
+          if (currentTurnId && userId && currentTurnId !== userId) {
+            console.warn(
+              "Received yourTurn event but game state says it's not our turn!",
+              {
+                userTurn: userId,
+                gameTurn: currentTurnId,
+              }
+            );
+
+            // Request fresh state to ensure synchronization
+            setTimeout(() => {
+              component.requestStateUpdate();
+            }, 300);
+            return;
+          }
+        }
+
+        // Prevent duplicate processing in quick succession
+        if (component.isYourTurnProcessed) {
+          console.log("Already processed yourTurn, ignoring duplicate");
           return;
         }
 
-        console.log("Received cards:", data);
-        component.receiveCards(data);
-        component.addToLog("You have been dealt cards");
+        console.log("Your turn event received:", data);
 
-        // Mark game as initialized when we get cards
-        component.gameInitialized = true;
-        component.gameInProgress = true;
+        // Update the UI state before adding to log to ensure fast UI response
+        component.yourTurn(data);
 
-        // Force the currentGame status to be 'active' if it's not already
+        // Need to set component local state directly too for immediate UI update
+        component.isYourTurn = true;
+
+        component.addToLog("It is your turn");
+
+        // Make sure UI shows game is active
         if (
           component.currentGame &&
           component.currentGame.status !== "active"
         ) {
           component.$set(component.currentGame, "status", "active");
-          component.addToLog("Game status updated to active");
         }
 
-        // Clear any lingering error messages
-        component.clearErrorMessage();
+        // Mark game as initialized
+        component.gameInitialized = true;
+        component.gameInProgress = true;
 
-        // Request a full game state update to ensure UI is in sync
+        // Start action timer if it exists on component
+        if (typeof component.startActionTimer === "function") {
+          component.startActionTimer(data.timeLimit || 30);
+        }
+
+        // Set flag to avoid duplicate processing
+        component.isYourTurnProcessed = true;
+
+        // Reset the flag after a delay
         setTimeout(() => {
-          component.requestStateUpdate();
-        }, 500);
+          component.isYourTurnProcessed = false;
+        }, 3000);
       },
-
-      /**
- * Handle your turn event with better lifecycle and validation
- * @param {Object} data - Turn data with available options
- */
-handleYourTurn(data) {
-  // Check if we're already processing a turn or the state doesn't match
-  if (component.currentGame && component.currentUser) {
-    const currentTurnId = component.currentGame.currentTurn;
-    const userId = component.currentUser.id;
-    
-    // Validate that this turn matches the game state
-    if (currentTurnId && userId && currentTurnId !== userId) {
-      console.warn('Received yourTurn event but game state says it\'s not our turn!', {
-        userTurn: userId,
-        gameTurn: currentTurnId
-      });
-      
-      // Request fresh state to ensure synchronization
-      setTimeout(() => {
-        component.requestStateUpdate();
-      }, 300);
-      return;
-    }
-  }
-
-  // Prevent duplicate processing in quick succession
-  if (component.isYourTurnProcessed) {
-    console.log('Already processed yourTurn, ignoring duplicate');
-    return;
-  }
-
-  console.log('Your turn event received:', data);
-  
-  // Update the UI state before adding to log to ensure fast UI response
-  component.yourTurn(data);
-  
-  // Need to set component local state directly too for immediate UI update
-  component.isYourTurn = true;
-  
-  component.addToLog('It is your turn');
-
-  // Make sure UI shows game is active
-  if (component.currentGame && component.currentGame.status !== 'active') {
-    component.$set(component.currentGame, 'status', 'active');
-  }
-
-  // Mark game as initialized
-  component.gameInitialized = true;
-  component.gameInProgress = true;
-
-  // Start action timer if it exists on component
-  if (typeof component.startActionTimer === 'function') {
-    component.startActionTimer(data.timeLimit || 30);
-  }
-
-  // Set flag to avoid duplicate processing
-  component.isYourTurnProcessed = true;
-
-  // Reset the flag after a delay
-  setTimeout(() => {
-    component.isYourTurnProcessed = false;
-  }, 3000);
-},
 
       /**
        * Handle turn changed event
@@ -281,32 +302,39 @@ handleYourTurn(data) {
       },
 
       /**
- * Handle action taken event with better feedback
- * @param {Object} data - Action data
- */
-handleActionTaken(data) {
-  // Immediately check if it was the current user's action
-  const isCurrentUser = component.currentUser && data.playerId === component.currentUser.id;
-  
-  // If it was current user's action, make sure UI is updated
-  if (isCurrentUser) {
-    // Force end turn for responsive UI
-    component.endTurn();
-  }
-  
-  // Log actions from other players
-  if (!isCurrentUser) {
-    const player = component.currentGame?.players?.find(p => p.id === data.playerId);
-    const playerName = player ? player.username : 'Unknown';
+       * Handle action taken event with better feedback
+       * @param {Object} data - Action data
+       */
+      handleActionTaken(data) {
+        // Immediately check if it was the current user's action
+        const isCurrentUser =
+          component.currentUser && data.playerId === component.currentUser.id;
 
-    let actionText = `${playerName} ${data.action}s`;
-    if (data.action === 'bet' || data.action === 'raise' || data.action === 'allIn') {
-      actionText += ` ${data.amount} chips`;
-    }
+        // If it was current user's action, make sure UI is updated
+        if (isCurrentUser) {
+          // Force end turn for responsive UI
+          component.endTurn();
+        }
 
-    component.addToLog(actionText);
-  }
-},
+        // Log actions from other players
+        if (!isCurrentUser) {
+          const player = component.currentGame?.players?.find(
+            (p) => p.id === data.playerId
+          );
+          const playerName = player ? player.username : "Unknown";
+
+          let actionText = `${playerName} ${data.action}s`;
+          if (
+            data.action === "bet" ||
+            data.action === "raise" ||
+            data.action === "allIn"
+          ) {
+            actionText += ` ${data.amount} chips`;
+          }
+
+          component.addToLog(actionText);
+        }
+      },
 
       /**
        * Handle flop dealt event

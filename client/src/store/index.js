@@ -103,7 +103,32 @@ export default new Vuex.Store({
     },
 
     SET_PLAYER_HAND(state, cards) {
-      state.playerHand = cards;
+      // First clear the array to ensure Vue reactivity triggers
+      state.playerHand = [];
+      
+      // Force Vue to detect the change by using Vue.set or a new array
+      // Option 1: Set with a completely new array
+      state.playerHand = [...cards];
+      
+      // Log for debugging
+      console.log('Vuex store updated player hand:', cards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+    },
+
+    FORCE_UPDATE_CARDS(state, cards) {
+      if (!cards || !Array.isArray(cards)) return;
+      
+      // Reset the array
+      state.playerHand.length = 0;
+      
+      // Add the cards one by one to ensure Vue reactivity
+      cards.forEach(card => {
+        state.playerHand.push({
+          ...card, // Create new object to avoid reference issues
+          _updated: Date.now() // Add timestamp to force reactivity
+        });
+      });
+      
+      console.log('Vuex store FORCE updated player hand:', state.playerHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
     },
 
     SET_ERROR_MESSAGE(state, message) {
@@ -669,6 +694,10 @@ export default new Vuex.Store({
       } finally {
         commit("SET_LOADING", false);
       }
+    },
+    forceUpdatePlayerHand({ commit }, cards) {
+      commit('FORCE_UPDATE_CARDS', cards);
+      return { success: true };
     },
   },
 });

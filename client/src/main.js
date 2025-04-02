@@ -10,8 +10,8 @@ import { loadConfig } from './services/config'
 
 Vue.config.productionTip = false
 
-// Set base URL for axios to local server
-const localUrl = 'http://localhost:3000'
+// Set base URL for axios to local server with updated port
+const localUrl = 'http://localhost:5000' // Updated from 3000 to 5000
 axios.defaults.baseURL = localUrl
 console.log('Setting axios base URL to:', localUrl)
 

@@ -232,7 +232,7 @@ app.get('/', (req, res) => {
 app.use(errorHandler);
 
 // Server setup
-const PORT = process.env.PORT || config.get('port') || 3000;
+const PORT = process.env.PORT || config.get('port') || 5000;
 
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);

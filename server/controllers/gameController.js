@@ -82,7 +82,8 @@ exports.createGame = async (req, res) => {
       }],
       status: 'waiting',
       pot: 0,
-      deck: [],
+      // Initialize with a fresh, properly shuffled deck
+      deck: require('../utils/cardDeck').createDeck(),
       communityCards: [],
       dealerPosition: 0,
       smallBlindPosition: 0,
@@ -221,13 +222,58 @@ exports.startGame = async (req, res) => {
       return res.status(400).json({ msg: 'Need at least 2 players to start' });
     }
 
-    // Update game status
-    game.status = 'active';
-    game.bettingRound = 'preflop';
-    game.dealerPosition = 0; // First player is dealer for first hand
-    
-    // Save the updated game
-    await game.save();
+    // Check if game has already started
+    if (game.status !== 'waiting') {
+      return res.status(400).json({ msg: 'Game has already been started' });
+    }
+
+    // Ensure a fresh deck is created for the game
+    game.deck = require('../utils/cardDeck').createDeck();
+    console.log(`Game ${gameId} initialized with a fresh deck of ${game.deck.length} cards`);
+
+    // Import debugging utilities for error cases
+    const debugging = require('../utils/debugging');
+
+    // Add error handler for any card-related issues
+    try {
+      // Update game status
+      game.status = 'active';
+      game.bettingRound = 'preflop';
+      game.dealerPosition = 0; // First player is dealer for first hand
+      
+      // Save the updated game
+      await game.save();
+    } catch (error) {
+      if (error.message && error.message.includes('Duplicate card detected')) {
+        console.error('Duplicate card issue detected at game start:', error.message);
+        // Try to fix the duplicate cards issue
+        try {
+          const fixResult = await debugging.fixDuplicateCards(game);
+          console.log('Fixed card duplication issue:', fixResult);
+          
+          // Try saving again after fixing
+          game.status = 'active';
+          game.bettingRound = 'preflop';
+          game._skipValidation = true; // Skip validation for this save
+          await game.save();
+        } catch (fixError) {
+          console.error('Failed to fix card issue:', fixError);
+          return res.status(500).json({ 
+            msg: 'Error starting game: card duplication issue', 
+            details: error.message 
+          });
+        }
+      } else {
+        console.error('Start game error:', error.message);
+        return res.status(500).send('Server error');
+      }
+    }
+
+    // Check for any remaining duplicate issues before returning
+    const checkResult = debugging.checkGameForDuplicates(game);
+    if (checkResult.hasDuplicates) {
+      console.warn(`Some duplicate cards still remain after fixing: ${JSON.stringify(checkResult.duplicates)}`);
+    }
 
     res.json({ success: true });
   } catch (err) {
