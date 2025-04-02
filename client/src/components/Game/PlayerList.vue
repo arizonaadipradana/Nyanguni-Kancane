@@ -1,4 +1,5 @@
-<!-- client/src/components/Game/PlayerList.vue -->
+// client/src/components/Game/PlayerList.vue
+
 <template>
   <div class="players-container">
     <!-- Show message when no players -->
@@ -6,14 +7,22 @@
       No players have joined yet
     </div>
 
-    <div v-for="(player, index) in players" :key="`player-${player.id}-${index}-${updateKey}`" class="player-spot"
+    <!-- Add debug info in dev mode -->
+    <div v-if="isDevelopment" class="player-count-debug">
+      Players: {{ players.length }}
+    </div>
+
+    <div v-for="(player, index) in players" :key="`player-${player.id || index}-${updateKey}`" class="player-spot"
       :class="{
         'current-player': currentUser && player.id === currentUser.id,
         'active-turn': currentTurn && player.id === currentTurn,
         'folded': player.hasFolded
       }">
       <div class="player-info">
-        <div class="player-name">{{ player.username || 'Unknown Player' }}</div>
+        <div class="player-name" @click="logPlayerDetails(player)">
+          {{ player.username || 'Unknown Player' }}
+          <span v-if="player.id === hostId" class="host-badge">Host</span>
+        </div>
         <div class="player-chips">
           Chips: {{ player.totalChips || 0 }}
           <span v-if="player.chips > 0">({{ player.chips }} in pot)</span>
@@ -68,11 +77,25 @@ export default {
   data() {
     return {
       updateKey: 0, // Add an update key to force re-rendering
-      lastHandUpdate: Date.now()
+      lastHandUpdate: Date.now(),
+      isDevelopment: process.env.NODE_ENV !== 'production'
     };
   },
 
   computed: {
+    // Find the host ID (first player or player with position 0)
+    hostId() {
+      if (!this.players || this.players.length === 0) return null;
+      
+      // Try to find player with position 0
+      const hostPlayer = this.players.find(p => p.position === 0);
+      if (hostPlayer) return hostPlayer.id;
+      
+      // Fallback to first player in the array
+      return this.players[0].id;
+    },
+
+    // Debug info about players
     playerDebugInfo() {
       if (!this.players) return 'No players';
 
@@ -103,6 +126,20 @@ export default {
         }
       },
       deep: true
+    },
+    
+    // Watch players array for changes
+    players: {
+      handler(newPlayers, oldPlayers) {
+        if (!oldPlayers || !newPlayers) return;
+        
+        // Check if player count changed
+        if (newPlayers.length !== oldPlayers.length) {
+          console.log(`PlayerList: Player count changed from ${oldPlayers.length} to ${newPlayers.length}`);
+          this.updateKey++; // Force re-render
+        }
+      },
+      deep: true
     }
   },
 
@@ -129,6 +166,13 @@ export default {
       this.updateKey++;
       this.lastHandUpdate = Date.now();
       console.log('PlayerList forced update');
+    },
+    
+    // Log player details to console for debugging
+    logPlayerDetails(player) {
+      if (this.isDevelopment) {
+        console.log('Player details:', JSON.stringify(player, null, 2));
+      }
     }
   }
 };
@@ -139,6 +183,19 @@ export default {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-around;
+  position: relative;
+}
+
+.player-count-debug {
+  position: absolute;
+  top: -20px;
+  right: 10px;
+  background-color: #333;
+  color: #ff9800;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: monospace;
 }
 
 .no-players {
@@ -178,6 +235,18 @@ export default {
 .player-name {
   font-weight: bold;
   font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.host-badge {
+  font-size: 10px;
+  background-color: #ff9800;
+  color: black;
+  padding: 1px 5px;
+  border-radius: 10px;
+  font-weight: normal;
 }
 
 .player-chips {

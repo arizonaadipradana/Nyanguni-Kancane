@@ -49,41 +49,58 @@ export default new Vuex.Store({
       if (user) {
         // Create a new object to avoid mutation issues
         const standardizedUser = { ...user };
-        
+
         // Make sure we have an id property, copying from _id if needed
         if (!standardizedUser.id && standardizedUser._id) {
           standardizedUser.id = standardizedUser._id;
         }
-        
+
         // Also do the reverse - ensure _id exists if we have id
         if (standardizedUser.id && !standardizedUser._id) {
           standardizedUser._id = standardizedUser.id;
         }
-        
+
         // Handle MongoDB $oid format if present
-        if (typeof standardizedUser.id === 'object' && standardizedUser.id?.$oid) {
+        if (
+          typeof standardizedUser.id === "object" &&
+          standardizedUser.id?.$oid
+        ) {
           standardizedUser.id = standardizedUser.id.$oid;
         }
-        if (typeof standardizedUser._id === 'object' && standardizedUser._id?.$oid) {
+        if (
+          typeof standardizedUser._id === "object" &&
+          standardizedUser._id?.$oid
+        ) {
           standardizedUser._id = standardizedUser._id.$oid;
         }
-        
+
         // Handle objects with toString method (like MongoDB ObjectID)
-        if (typeof standardizedUser.id === 'object' && typeof standardizedUser.id?.toString === 'function') {
+        if (
+          typeof standardizedUser.id === "object" &&
+          typeof standardizedUser.id?.toString === "function"
+        ) {
           standardizedUser.id = standardizedUser.id.toString();
         }
-        if (typeof standardizedUser._id === 'object' && typeof standardizedUser._id?.toString === 'function') {
+        if (
+          typeof standardizedUser._id === "object" &&
+          typeof standardizedUser._id?.toString === "function"
+        ) {
           standardizedUser._id = standardizedUser._id.toString();
         }
-        
+
         // Ensure both are strings to make comparison easier
-        if (standardizedUser.id) standardizedUser.id = String(standardizedUser.id);
-        if (standardizedUser._id) standardizedUser._id = String(standardizedUser._id);
-        
+        if (standardizedUser.id)
+          standardizedUser.id = String(standardizedUser.id);
+        if (standardizedUser._id)
+          standardizedUser._id = String(standardizedUser._id);
+
         // Set the standardized user in state
         state.user = standardizedUser;
-        
-        console.log('User data standardized and stored in state:', standardizedUser);
+
+        console.log(
+          "User data standardized and stored in state:",
+          standardizedUser
+        );
       } else {
         state.user = null;
       }
@@ -103,32 +120,46 @@ export default new Vuex.Store({
     },
 
     SET_PLAYER_HAND(state, cards) {
-      // First clear the array to ensure Vue reactivity triggers
-      state.playerHand = [];
-      
-      // Force Vue to detect the change by using Vue.set or a new array
-      // Option 1: Set with a completely new array
-      state.playerHand = [...cards];
-      
+      if (!cards || !Array.isArray(cards)) {
+        console.warn("Invalid cards array passed to SET_PLAYER_HAND");
+        state.playerHand = [];
+        return;
+      }
+
+      // Make a deep copy of the cards to avoid reference issues
+      const cardsCopy = cards.map((card) => ({
+        ...card,
+        _updated: Date.now(), // Add timestamp to force reactivity
+      }));
+
       // Log for debugging
-      console.log('Vuex store updated player hand:', cards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+      console.log(
+        "Setting player hand with cards:",
+        cardsCopy.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+      );
+
+      // Assign the new array to trigger reactivity
+      state.playerHand = cardsCopy;
     },
 
     FORCE_UPDATE_CARDS(state, cards) {
       if (!cards || !Array.isArray(cards)) return;
-      
+
       // Reset the array
       state.playerHand.length = 0;
-      
+
       // Add the cards one by one to ensure Vue reactivity
-      cards.forEach(card => {
+      cards.forEach((card) => {
         state.playerHand.push({
           ...card, // Create new object to avoid reference issues
-          _updated: Date.now() // Add timestamp to force reactivity
+          _updated: Date.now(), // Add timestamp to force reactivity
         });
       });
-      
-      console.log('Vuex store FORCE updated player hand:', state.playerHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+
+      console.log(
+        "Vuex store FORCE updated player hand:",
+        state.playerHand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+      );
     },
 
     SET_ERROR_MESSAGE(state, message) {
@@ -562,7 +593,7 @@ export default new Vuex.Store({
     },
 
     // Socket event handlers
-    updateGameState({ commit, state }, gameState) {
+    updateGameState(state, gameState) {
       if (!gameState) return;
 
       // Log detailed game state for debugging
@@ -574,57 +605,98 @@ export default new Vuex.Store({
         bettingRound: gameState.bettingRound,
       });
 
-      // Make sure important fields are present
+      // Create a modified game state object
       const enhancedGameState = { ...gameState };
 
-      // Force status to 'active' if players have cards but status doesn't reflect it
+      // Ensure players is always a valid array
       if (
-        gameState.players &&
-        gameState.players.some((p) => p.hasCards) &&
-        gameState.status !== "active"
+        !enhancedGameState.players ||
+        !Array.isArray(enhancedGameState.players)
+      ) {
+        enhancedGameState.players = [];
+      }
+
+      // Handle allPlayers field if present (special field for improved visibility)
+      if (
+        enhancedGameState.allPlayers &&
+        Array.isArray(enhancedGameState.allPlayers)
       ) {
         console.log(
-          "Players have cards but game status is not active; forcing to active"
+          `Found ${enhancedGameState.allPlayers.length} players in allPlayers array`
         );
-        enhancedGameState.status = "active";
+
+        // If players array is empty or smaller than allPlayers, use allPlayers instead
+        if (
+          enhancedGameState.players.length < enhancedGameState.allPlayers.length
+        ) {
+          console.log("Using allPlayers array to enhance player visibility");
+
+          // Convert allPlayers to full player objects
+          const fullPlayers = enhancedGameState.allPlayers.map((player) => ({
+            id: player.id,
+            username: player.username,
+            chips: player.chips || 0,
+            totalChips: player.totalChips || 0,
+            hasCards: player.hasCards || false,
+            hasFolded: player.hasFolded || false,
+            hasActed: player.hasActed || false,
+            isAllIn: player.isAllIn || false,
+            isActive: player.isActive !== undefined ? player.isActive : true,
+            position: player.position || 0,
+          }));
+
+          // Merge with existing players to preserve detailed info
+          const existingPlayerMap = new Map();
+          enhancedGameState.players.forEach((player) => {
+            if (player && player.id) {
+              existingPlayerMap.set(player.id, player);
+            }
+          });
+
+          // Create the merged player list
+          enhancedGameState.players = fullPlayers.map((player) => {
+            // Use existing player data if available, otherwise use the basic player
+            return existingPlayerMap.has(player.id)
+              ? { ...player, ...existingPlayerMap.get(player.id) }
+              : player;
+          });
+
+          console.log(
+            `Enhanced player list now has ${enhancedGameState.players.length} players`
+          );
+        }
       }
 
-      // Add creator info if it's missing but we previously had it
+      // IMPORTANT: Check if it's no longer the current user's turn - if so, clear turn state
       if (
-        !gameState.creator &&
-        state.currentGame &&
-        state.currentGame.creator
+        state.isYourTurn &&
+        state.user &&
+        enhancedGameState.currentTurn &&
+        enhancedGameState.currentTurn !== String(state.user.id)
       ) {
-        console.log("Preserving creator info that was missing in update");
-        enhancedGameState.creator = state.currentGame.creator;
+        console.log(
+          "Game state indicates it is no longer your turn, updating UI"
+        );
+        state.isYourTurn = false;
+        state.availableActions = [];
       }
 
-      // Commit the enhanced state
-      commit("SET_CURRENT_GAME", enhancedGameState);
+      // Update the game state in store
+      state.currentGame = enhancedGameState;
 
       // If this update includes turn info and it's the current user's turn,
       // make sure the isYourTurn flag is set
       if (
         state.user &&
-        gameState.currentTurn &&
-        gameState.currentTurn === state.user.id &&
+        enhancedGameState.currentTurn &&
+        String(enhancedGameState.currentTurn) === String(state.user.id) &&
         !state.isYourTurn
       ) {
         console.log(
           "Game state shows it is your turn, updating isYourTurn flag"
         );
-        commit("SET_YOUR_TURN", true);
-
-        // Derive available actions if needed
-        if (state.availableActions.length === 0) {
-          commit("SET_AVAILABLE_ACTIONS", [
-            "fold",
-            "check",
-            "call",
-            "bet",
-            "raise",
-          ]);
-        }
+        state.isYourTurn = true;
+        state.availableActions = ["fold", "check", "call", "bet", "raise"];
       }
     },
 
@@ -696,7 +768,7 @@ export default new Vuex.Store({
       }
     },
     forceUpdatePlayerHand({ commit }, cards) {
-      commit('FORCE_UPDATE_CARDS', cards);
+      commit("FORCE_UPDATE_CARDS", cards);
       return { success: true };
     },
   },

@@ -37,7 +37,7 @@
           :formatCard="formatCard" />
 
         <!-- Players -->
-        <PlayerList :players="currentGame && currentGame.players ? currentGame.players : []" :currentUser="currentUser"
+        <PlayerList :players="getVisiblePlayers()" :currentUser="currentUser"
           :currentTurn="currentGame ? currentGame.currentTurn : null" :playerHand="playerHand"
           :formatCard="formatCard" />
 
@@ -75,6 +75,14 @@
     <GameDebugPanel :enabled="showDebugPanel" :gameId="gameId" :currentGame="currentGame" :currentUser="currentUser"
       :isCreator="isCreator" :isConnected="isConnected" @close="showDebugPanel = false" @log="addToLog"
       @forceStart="forceStartGame" />
+
+    <DebugPlayerVisibility :visible="showPlayerDebug" :currentGame="currentGame" :currentUser="currentUser"
+      :visiblePlayers="getVisiblePlayers()" @close="showPlayerDebug = false" @refresh="forceRefreshPlayers" />
+
+    <!-- Debug toggle button for player visibility -->
+    <button @click="showPlayerDebug = !showPlayerDebug" class="player-debug-toggle">
+      {{ showPlayerDebug ? 'Hide Player Debug' : 'Debug Players' }}
+    </button>
   </div>
 </template>
 
@@ -93,6 +101,8 @@ import { formatCard, getDefaultOptions, addToGameLog } from '@/utils/gameUtils';
 import GameChat from '@/components/Game/GameChat.vue';
 import WinnerDisplay from '@/components/Game/WinnerDisplay.vue';
 import io from 'socket.io-client';
+import DebugPlayerVisibility from '@/components/Game/DebugPlayerVisibility.vue';
+
 
 export default {
   name: 'Game',
@@ -105,8 +115,52 @@ export default {
     PlayerActions,
     GameLog,
     GameDebugPanel,
-    GameChat,    // Add this
-    WinnerDisplay
+    GameChat,
+    WinnerDisplay,
+    DebugPlayerVisibility
+  },
+
+  watch: {
+    // Watch for changes to the player hand
+    playerHand: {
+      handler(newHand) {
+        if (newHand && newHand.length > 0) {
+          console.log('Game.vue detected player hand change:',
+            newHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+          this.forceCardUpdate();
+        }
+      },
+      deep: true
+    },
+
+    // Watch for changes to the current game object
+    'currentGame': {
+      handler(newGame, oldGame) {
+        // Check if player count has changed
+        const newPlayers = newGame?.players?.length || 0;
+        const oldPlayers = oldGame?.players?.length || 0;
+
+        if (newPlayers !== oldPlayers) {
+          console.log(`Player count changed: ${oldPlayers} -> ${newPlayers}`);
+          // Force update to ensure UI reflects the change
+          this.$forceUpdate();
+        }
+
+        // Check for allPlayers array
+        if (newGame?.allPlayers && Array.isArray(newGame.allPlayers)) {
+          const totalPlayers = newGame.allPlayers.length;
+          console.log(`Game has ${totalPlayers} total players in allPlayers array`);
+        }
+      },
+      deep: true
+    },
+
+    // Watch for changes to the error message
+    errorMessage(newValue) {
+      if (newValue) {
+        console.error('Game error:', newValue);
+      }
+    }
   },
 
   data() {
@@ -139,6 +193,7 @@ export default {
       isReconnecting: false, // Add this missing property
       availableActions: [],
       cardRefreshInterval: null,
+      showPlayerDebug: false,
     };
   },
 
@@ -249,6 +304,9 @@ export default {
       this.isYourTurn = true;
       this.availableActions = data.options || [];
       this.actionTimeLimit = data.timeLimit || 60;
+
+      // Log the received options for debugging
+      console.log(`Your turn with options:`, this.availableActions);
 
       // Update store state as well
       this.$store.commit('SET_YOUR_TURN', true);
@@ -602,7 +660,35 @@ export default {
 
     requestStateUpdate() {
       this.addToLog('Requesting game state update...');
-      SocketService.requestGameUpdate(this.gameId, this.currentUser.id);
+
+      if (!this.currentUser || !this.currentUser.id) {
+        console.warn("Cannot request update - no user ID");
+        return;
+      }
+
+      if (!this.gameId) {
+        console.warn("Cannot request update - no game ID");
+        return;
+      }
+
+      // First try via socket service
+      SocketService.requestGameUpdate(this.gameId, this.currentUser.id)
+        .then(success => {
+          if (!success) {
+            console.log("Socket update failed, trying API fallback");
+
+            // Fallback to API if socket fails
+            this.$store.dispatch('fetchGame', this.gameId)
+              .catch(err => {
+                console.error("API fallback also failed:", err);
+                this.SET_ERROR_MESSAGE("Failed to update game state");
+              });
+          }
+        })
+        .catch(err => {
+          console.error("Error requesting game update:", err);
+          this.addToLog("Error updating game state");
+        });
     },
 
     shouldShowActions() {
@@ -937,6 +1023,261 @@ export default {
       // Force UI update
       this.$forceUpdate();
     },
+
+    debugCurrentPlayer() {
+      if (!this.currentGame || !this.currentUser) {
+        console.log('No game or user data available');
+        return;
+      }
+
+      const player = this.currentGame.players.find(
+        p => p.id === this.currentUser.id
+      );
+
+      if (!player) {
+        console.log('Current player not found in game players list!');
+        console.log('Current user ID:', this.currentUser.id);
+        console.log('Game players:', this.currentGame.players.map(p => ({ id: p.id, username: p.username })));
+        return;
+      }
+
+      console.log('Current player state:', {
+        id: player.id,
+        username: player.username,
+        chips: player.chips,
+        totalChips: player.totalChips,
+        isActive: player.isActive,
+        hasFolded: player.hasFolded,
+        hasActed: player.hasActed,
+        isAllIn: player.isAllIn
+      });
+      console.log('Game state:', {
+        currentTurn: this.currentGame.currentTurn,
+        currentBet: this.currentGame.currentBet,
+        bettingRound: this.currentGame.bettingRound,
+        pot: this.currentGame.pot
+      });
+    },
+    debugGameState() {
+      console.log("=== GAME STATE DEBUG ===");
+      console.log("Current Game:", this.currentGame);
+      console.log("Current User:", this.currentUser);
+      console.log("Is Creator:", this.isCreator);
+      console.log("Is Connected:", this.isConnected);
+      console.log("Is Your Turn:", this.isYourTurn);
+      console.log("Available Actions:", this.availableActions);
+      console.log("Player Hand:", this.playerHand);
+      console.log("Game Initialized:", this.gameInitialized);
+      console.log("Game In Progress:", this.gameInProgress);
+
+      // Check for players in the game
+      if (this.currentGame && this.currentGame.players) {
+        console.log(`Players (${this.currentGame.players.length}):`);
+        this.currentGame.players.forEach((player, index) => {
+          console.log(`  Player ${index}: ${player.username} (ID: ${player.id})`);
+        });
+      } else {
+        console.log("No players found in game state");
+      }
+
+      // Check if current user is in the players list
+      if (this.currentUser && this.currentGame && this.currentGame.players) {
+        const foundPlayer = this.currentGame.players.find(p =>
+          p.id === this.currentUser.id ||
+          (this.currentUser._id && p.id === this.currentUser._id)
+        );
+
+        if (foundPlayer) {
+          console.log("Current user found in players list:", foundPlayer);
+        } else {
+          console.warn("IMPORTANT: Current user NOT found in players list!");
+          console.log("Current User ID:", this.currentUser.id);
+          console.log("Player IDs:", this.currentGame.players.map(p => p.id));
+        }
+      }
+
+      console.log("=======================");
+    },
+
+    // Add this method to force resynchronization if a player can't see others:
+    forceSyncPlayers() {
+      if (!this.currentGame || !this.gameId) {
+        console.warn("Cannot sync - no current game");
+        this.addToLog("Cannot sync - no game loaded");
+        return;
+      }
+
+      this.addToLog("Forcing player list synchronization...");
+
+      // First request a game state update
+      this.requestStateUpdate();
+
+      // Then set up a delayed follow-up to check if it worked
+      setTimeout(() => {
+        if (this.currentGame && this.currentGame.players) {
+          this.addToLog(`Synchronized with ${this.currentGame.players.length} players`);
+
+          // Force UI update
+          this.$forceUpdate();
+
+          // Find all child components and force update them too
+          this.$children.forEach(child => {
+            if (typeof child.$forceUpdate === 'function') {
+              child.$forceUpdate();
+            }
+          });
+        } else {
+          this.addToLog("Sync failed - please try again");
+        }
+      }, 2000);
+    },
+
+    fixPlayerVisibility() {
+      if (!this.currentGame || !this.gameId || !this.currentUser) {
+        this.addToLog("Cannot fix player visibility - missing data");
+        return;
+      }
+
+      this.addToLog("Attempting to fix player visibility...");
+
+      // First check if we're properly connected
+      if (!this.isConnected) {
+        // Try to reconnect first
+        this.addToLog("Reconnecting to game server...");
+        SocketService.init()
+          .then(() => {
+            return SocketService.joinGame(
+              this.gameId,
+              this.currentUser.id,
+              this.currentUser.username
+            );
+          })
+          .then(() => {
+            this.addToLog("Reconnected and joined game");
+            this.forceSyncPlayers();
+          })
+          .catch(err => {
+            console.error("Error reconnecting:", err);
+            this.addToLog("Failed to reconnect");
+          });
+        return;
+      }
+
+      // If we're connected but don't see players, force rejoin
+      this.addToLog("Rejoining game to refresh player list...");
+      SocketService.leaveGame(this.gameId, this.currentUser.id);
+
+      // Short delay before rejoining
+      setTimeout(() => {
+        SocketService.joinGame(
+          this.gameId,
+          this.currentUser.id,
+          this.currentUser.username
+        )
+          .then(() => {
+            this.addToLog("Rejoined game");
+            this.forceSyncPlayers();
+          })
+          .catch(err => {
+            console.error("Error rejoining:", err);
+            this.addToLog("Failed to rejoin");
+          });
+      }, 1000);
+    },
+    /**
+ * Get the visible players - combines players from multiple sources to ensure visibility
+ * @returns {Array} Combined list of players from all available sources
+ */
+    /**
+ * Get the visible players - combines players from multiple sources to ensure visibility
+ * @returns {Array} Combined list of players from all available sources
+ */
+    getVisiblePlayers() {
+      // No game loaded yet
+      if (!this.currentGame) return [];
+
+      // Start with the regular players array
+      let players = this.currentGame.players || [];
+
+      // If we have allPlayers array (from enhanced server response), merge with players
+      if (this.currentGame.allPlayers && Array.isArray(this.currentGame.allPlayers)) {
+        // Create a set of existing player IDs for fast lookup
+        const existingPlayerIds = new Set(players.map(p => p.id));
+
+        // Add any players from allPlayers that aren't already in players
+        this.currentGame.allPlayers.forEach(player => {
+          if (!existingPlayerIds.has(player.id)) {
+            // Create a full player object with default values
+            players.push({
+              id: player.id,
+              username: player.username,
+              chips: 0,
+              totalChips: 0,
+              hasCards: false,
+              hasFolded: false,
+              hasActed: false,
+              isAllIn: false,
+              isActive: player.isActive !== undefined ? player.isActive : true,
+              position: player.position || 0
+            });
+            console.log(`Added missing player to display: ${player.username}`);
+          }
+        });
+      }
+
+      // Log the players we're displaying
+      console.log(`Displaying ${players.length} players:`,
+        players.map(p => p.username).join(', '));
+
+      return players;
+    },
+    forceRefreshPlayers() {
+      // Request fresh game state
+      this.requestStateUpdate();
+
+      // Force component updates
+      this.$forceUpdate();
+      this.$nextTick(() => {
+        if (this.$refs.playerList && typeof this.$refs.playerList.forceUpdate === 'function') {
+          this.$refs.playerList.forceUpdate();
+        }
+      });
+
+      // Add a log message
+      this.addToLog('Forcing player refresh...');
+
+      // Try to reset the socket connection if there are issues
+      setTimeout(() => {
+        // Only reconnect if player count seems wrong
+        if (this.currentGame && this.currentGame.players &&
+          this.currentGame.players.length < 2 && this.isCreator) {
+
+          this.addToLog('Attempting to fix player visibility with socket reset...');
+
+          // Disconnect and reconnect
+          SocketService.disconnect();
+
+          setTimeout(() => {
+            SocketService.init()
+              .then(() => {
+                return SocketService.joinGame(
+                  this.gameId,
+                  this.currentUser.id,
+                  this.currentUser.username
+                );
+              })
+              .then(() => {
+                this.addToLog('Socket reconnected');
+                this.requestStateUpdate();
+              })
+              .catch(err => {
+                console.error('Reconnection error:', err);
+                this.addToLog('Reconnection failed');
+              });
+          }, 1000);
+        }
+      }, 2000);
+    },
   },
 
   created() {
@@ -1201,5 +1542,19 @@ export default {
 .game-status-wrapper {
   grid-area: status;
   width: 100%;
+}
+
+.player-debug-toggle {
+  position: fixed;
+  bottom: 10px;
+  left: 10px;
+  background-color: #333;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 1000;
 }
 </style>

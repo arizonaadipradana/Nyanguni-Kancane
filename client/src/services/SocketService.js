@@ -513,10 +513,10 @@ class SocketService {
    */
   setupGameListeners() {
     if (!this.gameSocket) return;
-
+  
     // Track message IDs to prevent duplicates
     const processedMessageIds = new Set();
-
+  
     // Define events to listen for
     const events = [
       "gameUpdate",
@@ -537,34 +537,49 @@ class SocketService {
       "gameError",
       "playerConnectionChange",
     ];
-
+  
     // Register listeners for each event
     events.forEach((event) => {
       // Remove any existing listeners to prevent duplicates
       this.gameSocket.off(event);
-
-      // Add new listener that will emit to our own events system
+  
+      // Add new listener that will emit to our own events system with error handling
       this.gameSocket.on(event, (data) => {
-        // Special handling for chat messages to prevent duplicates
-        if (event === "chatMessage" && data.messageId) {
-          if (processedMessageIds.has(data.messageId)) {
-            console.log(
-              "Duplicate chat message detected, ignoring:",
-              data.messageId
-            );
-            return;
+        try {
+          // Special handling for chat messages to prevent duplicates
+          if (event === "chatMessage" && data.messageId) {
+            if (processedMessageIds.has(data.messageId)) {
+              console.log(
+                "Duplicate chat message detected, ignoring:",
+                data.messageId
+              );
+              return;
+            }
+  
+            // Add to processed set and limit its size
+            processedMessageIds.add(data.messageId);
+            if (processedMessageIds.size > 100) {
+              // Keep the set from growing too large by removing oldest entries
+              const iterator = processedMessageIds.values();
+              processedMessageIds.delete(iterator.next().value);
+            }
           }
-
-          // Add to processed set and limit its size
-          processedMessageIds.add(data.messageId);
-          if (processedMessageIds.size > 100) {
-            // Keep the set from growing too large by removing oldest entries
-            const iterator = processedMessageIds.values();
-            processedMessageIds.delete(iterator.next().value);
+  
+          // Try to parse the received data if it's a string
+          let parsedData = data;
+          if (typeof data === 'string') {
+            try {
+              parsedData = JSON.parse(data);
+            } catch (e) {
+              // Not JSON, use as is
+            }
           }
+  
+          // Emit the event to our own event system
+          this.emit(event, parsedData);
+        } catch (error) {
+          console.error(`Error handling socket event ${event}:`, error);
         }
-
-        this.emit(event, data);
       });
     });
   }
@@ -606,14 +621,23 @@ class SocketService {
   }
 
   /**
-   * Emit an event
-   * @param {string} event - Event name
-   * @param {any} data - Event data
-   */
-  emit(event, data) {
-    if (!this.events[event]) return;
-    this.events[event].forEach((callback) => callback(data));
-  }
+ * Emit an event
+ * @param {string} event - Event name
+ * @param {any} data - Event data
+ */
+emit(event, data) {
+  if (!this.events[event]) return;
+  
+  // Loop through handlers with try/catch for each one
+  this.events[event].forEach(callback => {
+    try {
+      callback(data);
+    } catch (error) {
+      console.error(`Error in ${event} handler:`, error);
+      // Continue to next handler instead of breaking the chain
+    }
+  });
+}
 
   /**
    * Get connection status

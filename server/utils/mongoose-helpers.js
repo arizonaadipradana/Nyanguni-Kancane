@@ -228,3 +228,104 @@ exports.withFreshGame = async function(gameId, operation) {
     throw error;
   }
 };
+
+/**
+ * Perform a direct atomic update bypassing versioning
+ * Handles player addition to games safely with ID consistency
+ * @param {Model} model - Mongoose model (Game)
+ * @param {String} gameId - Game ID to find
+ * @param {Object} update - Update operations ($set, $push, etc)
+ * @param {Object} options - Additional options
+ * @returns {Promise<Document>} Updated document
+ */
+exports.safeAtomicUpdate = async function(model, gameId, update, options = {}) {
+  const mongoose = require('mongoose');
+  
+  try {
+    // Special handling for player additions to ensure consistent ObjectIDs
+    if (update.$push && update.$push.players && update.$push.players.user) {
+      // Ensure player.user is a valid ObjectId if possible
+      const userId = update.$push.players.user;
+      if (mongoose.Types.ObjectId.isValid(userId)) {
+        update.$push.players.user = mongoose.Types.ObjectId(userId);
+      }
+    }
+    
+    // Use findOneAndUpdate with the raw gameId field, not _id
+    // This bypasses version checks completely
+    const updated = await model.findOneAndUpdate(
+      { gameId: gameId },
+      update,
+      { 
+        new: true, // Return updated document
+        runValidators: false, // Skip validation for performance
+        versionKey: false, // Ignore version key
+        ...options
+      }
+    );
+    
+    if (!updated) {
+      throw new Error(`Game ${gameId} not found during atomic update`);
+    }
+    
+    return updated;
+  } catch (error) {
+    console.error(`Atomic update error for game ${gameId}:`, error);
+    throw error;
+  }
+};
+
+/**
+ * Fix player data in a game to ensure consistent IDs
+ * @param {String} gameId - Game ID
+ * @returns {Promise<Object>} Result of the operation
+ */
+exports.fixPlayerData = async function(gameId) {
+  const Game = require('../models/Game');
+  const mongoose = require('mongoose');
+  
+  try {
+    // Get the game
+    const game = await Game.findOne({ gameId });
+    if (!game) {
+      throw new Error(`Game ${gameId} not found`);
+    }
+    
+    let updated = false;
+    
+    // Check each player for ID consistency
+    game.players.forEach(player => {
+      // Make sure player has a valid user ID
+      if (player.user) {
+        const userId = player.user.toString();
+        
+        // Convert to ObjectId if valid
+        if (mongoose.Types.ObjectId.isValid(userId)) {
+          const objectId = mongoose.Types.ObjectId(userId);
+          
+          // If the ID format changed, update the player
+          if (objectId.toString() !== player.user.toString()) {
+            player.user = objectId;
+            updated = true;
+            console.log(`Fixed player ID format: ${userId} -> ${objectId}`);
+          }
+        }
+      }
+    });
+    
+    // Only save if changes were made
+    if (updated) {
+      await game.save();
+      console.log(`Fixed player data in game ${gameId}`);
+    }
+    
+    return { 
+      success: true, 
+      updated,
+      playerCount: game.players.length
+    };
+  } catch (error) {
+    console.error(`Error fixing player data for game ${gameId}:`, error);
+    throw error;
+  }
+};

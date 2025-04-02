@@ -1348,49 +1348,49 @@ const gameLogic = {
     try {
       const player = this.getPlayerById(game, playerId);
       const options = [];
-
+  
       // Player can't act if they've folded or are all-in
       if (player.hasFolded || player.isAllIn) {
         return options;
       }
-
+  
       // Always can fold
       options.push("fold");
-
-      // Check if player can check - improved logic here
+  
+      // Check if player can check or call
       const playerInPot = player.chips || 0;
       const currentBet = game.currentBet || 0;
-
-      // Player can check if:
-      // 1. There's no current bet, or
-      // 2. They've already matched the current bet exactly
+  
+      // Player can check if there's no current bet or they've already matched it exactly
       if (currentBet === 0 || playerInPot === currentBet) {
         options.push("check");
-      }
-
-      // Call option - only available if there's a bet to call and player hasn't already matched it
-      if (currentBet > 0 && playerInPot < currentBet) {
+      } else {
+        // Player needs to call if there's a bet they haven't matched
+        // This was the missing part in the original code
         options.push("call");
       }
-
+  
       // Bet option - only if no current bet exists
       if (currentBet === 0 && player.totalChips > 0) {
         options.push("bet");
       }
-
+  
       // Raise option - if there's a current bet and player has enough chips to raise
       if (currentBet > 0 && player.totalChips + playerInPot > currentBet) {
         options.push("raise");
       }
-
+  
       // All-in option is always available if player has chips
       if (player.totalChips > 0) {
         options.push("allIn");
       }
-
+  
+      // Log the calculated options
+      console.log(`Calculated options for ${player.username}: ${options.join(", ")}`);
+      
       return options;
     } catch (error) {
-      console.error("Error determining player options:", error);
+      console.error(`Error determining player options: ${error.message}`);
       // Return minimal safe options on error
       return ["fold"];
     }
@@ -1449,40 +1449,104 @@ const gameLogic = {
 
   // Get sanitized game state (for sending to clients)
   getSanitizedGameState(game) {
-    const originalGetSanitizedGameState = gameLogic.getSanitizedGameState;
-    gameLogic.getSanitizedGameState = function (game) {
-      // Call the original function
-      const sanitizedGame = originalGetSanitizedGameState(game);
-
-      // Deduplicate players
-      return gameLogic.deduplicatePlayers(sanitizedGame);
-    };
-    return {
-      id: game.gameId,
-      status: game.status,
-      pot: game.pot,
-      communityCards: game.communityCards,
-      currentTurn: game.currentTurn,
-      currentBet: game.currentBet,
-      dealerPosition: game.dealerPosition,
-      smallBlindPosition: game.smallBlindPosition,
-      bigBlindPosition: game.bigBlindPosition,
-      bettingRound: game.bettingRound,
-      creator: game.creator,
-      players: game.players.map((player) => ({
-        id: player.user.toString(),
-        username: player.username,
-        chips: player.chips,
-        totalChips: player.totalChips,
-        hasCards: player.hand.length > 0,
-        hasFolded: player.hasFolded,
-        hasActed: player.hasActed,
-        isAllIn: player.isAllIn,
-        isActive: player.isActive,
-        position: player.position,
-      })),
-      actionHistory: game.actionHistory.slice(-10), // Last 10 actions
-    };
+    if (!game) {
+      console.warn('Attempted to sanitize null or undefined game');
+      return {
+        status: 'error',
+        message: 'Game not found',
+        players: [],
+        communityCards: []
+      };
+    }
+  
+    try {
+      // First ensure all player IDs are properly formatted as strings
+      const sanitizedPlayers = (game.players || []).map((player) => {
+        // Skip invalid players
+        if (!player || !player.user) return null;
+  
+        // Extract the player ID based on its type
+        let playerId;
+        if (typeof player.user === 'string') {
+          playerId = player.user;
+        } else if (typeof player.user === 'object' && player.user.$oid) {
+          playerId = player.user.$oid;
+        } else if (typeof player.user.toString === 'function') {
+          playerId = player.user.toString();
+        } else {
+          playerId = String(player.user);
+        }
+  
+        return {
+          id: playerId,
+          username: player.username || 'Unknown Player',
+          chips: player.chips || 0,
+          totalChips: player.totalChips || 0,
+          hasCards: player.hand && player.hand.length > 0,
+          hasFolded: !!player.hasFolded,
+          hasActed: !!player.hasActed,
+          isAllIn: !!player.isAllIn,
+          isActive: !!player.isActive,
+          position: player.position || 0,
+        };
+      })
+      .filter(player => player !== null); // Remove any invalid players
+    
+      // Format the current turn ID consistently
+      let currentTurnId = null;
+      if (game.currentTurn) {
+        if (typeof game.currentTurn === 'string') {
+          currentTurnId = game.currentTurn;
+        } else if (typeof game.currentTurn === 'object' && game.currentTurn.$oid) {
+          currentTurnId = game.currentTurn.$oid;
+        } else if (typeof game.currentTurn.toString === 'function') {
+          currentTurnId = game.currentTurn.toString();
+        } else {
+          currentTurnId = String(game.currentTurn);
+        }
+      }
+  
+      // Format creator info
+      let creator = null;
+      if (game.creator && game.creator.user) {
+        const creatorId = typeof game.creator.user === 'string' 
+          ? game.creator.user 
+          : (game.creator.user.$oid || game.creator.user.toString());
+        
+        creator = {
+          user: creatorId,
+          username: game.creator.username || 'Unknown Creator'
+        };
+      }
+  
+      // Create and return the sanitized game state
+      return {
+        id: game.gameId,
+        status: game.status || 'waiting',
+        pot: game.pot || 0,
+        communityCards: game.communityCards || [],
+        currentTurn: currentTurnId,
+        currentBet: game.currentBet || 0,
+        dealerPosition: game.dealerPosition || 0,
+        smallBlindPosition: game.smallBlindPosition || 0,
+        bigBlindPosition: game.bigBlindPosition || 1,
+        bettingRound: game.bettingRound || 'preflop',
+        creator: creator,
+        players: sanitizedPlayers,
+        actionHistory: (game.actionHistory || []).slice(-10), // Last 10 actions
+        lastUpdated: new Date().toISOString() // Add a timestamp to help with debugging
+      };
+    } catch (error) {
+      console.error('Error sanitizing game state:', error);
+      // Return minimal valid state in case of error
+      return {
+        id: game.gameId || 'unknown',
+        status: game.status || 'error',
+        message: 'Error processing game state',
+        players: [],
+        communityCards: []
+      };
+    }
   },
 
   // Process a full hand from start to finish

@@ -3,13 +3,8 @@
   <div class="player-actions">
     <h3>Your Turn</h3>
 
-    <TurnTimer 
-  ref="turnTimer"
-  :initialTime="actionTimeLimit" 
-  :isActive="isYourTurn" 
-  @warning="$emit('timeWarning')" 
-  @timeout="handleTimeout" 
-/>
+    <TurnTimer ref="turnTimer" :initialTime="actionTimeLimit" :isActive="isYourTurn" @warning="$emit('timeWarning')"
+      @timeout="handleTimeout" />
 
     <div class="action-buttons">
       <button v-if="availableActions.includes('fold')" @click="$emit('handleAction', 'fold')" class="btn btn-danger">
@@ -69,37 +64,40 @@ export default {
   },
 
   props: {
-  availableActions: {
-    type: Array,
-    default: () => []
+    availableActions: {
+      type: Array,
+      default: () => []
+    },
+    currentGame: {
+      type: Object,
+      default: null
+    },
+    betAmount: {
+      type: Number,
+      default: 1
+    },
+    raiseAmount: {
+      type: Number,
+      default: 0
+    },
+    actionTimeLimit: {
+      type: Number,
+      default: 30
+    },
+    isYourTurn: {  // Add this prop
+      type: Boolean,
+      default: false
+    },
+    actionTimeLimit: {
+      type: Number,
+      default: 30
+    },
   },
-  currentGame: {
-    type: Object,
-    default: null
-  },
-  betAmount: {
-    type: Number,
-    default: 1
-  },
-  raiseAmount: {
-    type: Number,
-    default: 0
-  },
-  actionTimeLimit: {
-    type: Number,
-    default: 30
-  },
-  isYourTurn: {  // Add this prop
-    type: Boolean,
-    default: false
-  }
-},
 
   data() {
     return {
       internalBetAmount: 1,
       internalRaiseAmount: 2,
-      actionTimeLimit: 60,
     };
   },
 
@@ -132,10 +130,22 @@ export default {
     },
 
     getCallAmount() {
-      const currentBet = this.currentGame ? (this.currentGame.currentBet || 0) : 0;
+      // If no current game, return 0
+      if (!this.currentGame) return 0;
+
+      // Get the current bet amount
+      const currentBet = this.currentGame.currentBet || 0;
+
+      // Get the player's chips already in the pot
       const playerChips = this.getPlayerChipsInPot();
-      const callAmount = currentBet - playerChips;
-      return Math.max(0, callAmount);
+
+      // Calculate how much more the player needs to add to call
+      const callAmount = Math.max(0, currentBet - playerChips);
+
+      // Log the calculation for debugging
+      console.log(`Call amount calculation: current bet ${currentBet} - player chips in pot ${playerChips} = ${callAmount}`);
+
+      return callAmount;
     },
 
     getMaxBetAmount() {
@@ -255,12 +265,19 @@ export default {
 
     handleTimeout() {
       // Automatically fold when time runs out
-  this.$emit('handleAction', 'fold');
+      this.$emit('handleAction', 'fold');
     },
     handleTimeWarning() {
       // Emit a time warning event - parent component can display a notification
       this.$emit('timeWarning');
     },
+
+    debugOptions() {
+      console.log('Available actions:', this.availableActions);
+      console.log('Current game state:', this.currentGame);
+      console.log('Player chips in pot:', this.getPlayerChipsInPot());
+      console.log('Current bet:', this.currentGame ? this.currentGame.currentBet : 'No game');
+    }
   },
 
   watch: {
