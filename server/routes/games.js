@@ -44,4 +44,26 @@ router.put('/end/:id', auth, gameController.endGame);
 // @access  Private
 router.get('/results/:id', auth, gameController.getGameResults);
 
+//@route   POST api/games/clean-all
+//@desc    Clean duplicate players from all active games
+//@access  Private/Admin
+router.post('/clean-all', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ msg: 'Not authorized' });
+    }
+    
+    // Clean all games
+    const debugging = require('../utils/debugging');
+    const result = await debugging.cleanAllGames();
+    
+    // Return the result
+    res.json(result);
+  } catch (err) {
+    console.error('Clean all games error:', err.message);
+    res.status(500).json({ msg: 'Server error', error: err.message });
+  }
+});
+
 module.exports = router;

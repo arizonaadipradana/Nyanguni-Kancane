@@ -3,6 +3,7 @@ const gameLogic = require("../utils/gameLogic");
 const Game = require("../models/Game");
 const User = require("../models/User");
 const mongoose = require("mongoose");
+const joiningPlayers = new Map(); // gameId-userId -> timestamp
 
 // Map user IDs to socket IDs
 const userSockets = new Map();
@@ -53,6 +54,28 @@ module.exports = (io) => {
           });
         }
 
+        // Create a unique key for this join operation
+        const joinKey = `${gameId}-${userId}`;
+
+        // Check if this player is already in the process of joining
+        const existingJoin = joiningPlayers.get(joinKey);
+        if (existingJoin) {
+          const now = Date.now();
+          // If the existing join is less than 5 seconds old, skip this request
+          if (now - existingJoin < 5000) {
+            console.log(
+              `Ignoring duplicate join request for ${username} (${userId}) to game ${gameId} - already processing`
+            );
+            return;
+          } else {
+            // If it's an old join (>5 seconds), clear it and continue
+            joiningPlayers.delete(joinKey);
+          }
+        }
+
+        // Set joining status to prevent duplicate processing
+        joiningPlayers.set(joinKey, Date.now());
+
         // Join the socket room for this game
         socket.join(gameId);
         socket.gameId = gameId;
@@ -64,24 +87,28 @@ module.exports = (io) => {
         }
         gameRooms.get(gameId).add(socket.id);
 
-        // Find the game
+        // Find the game with findOne to get a fresh document
         const game = await Game.findOne({ gameId });
         if (!game) {
+          joiningPlayers.delete(joinKey); // Clear join status
           socket.emit("gameError", { message: "Game not found" });
           return;
         }
 
         // Check if player is already in the game
-        const existingPlayer = game.players.find(
-          (player) => player.user.toString() === userId
+        const existingPlayerIndex = game.players.findIndex(
+          (player) => String(player.user) === String(userId)
         );
-        let playerAdded = false;
 
-        if (!existingPlayer) {
-          // Add player to the game
+        let playerAdded = false;
+        let playerReactivated = false;
+
+        if (existingPlayerIndex === -1) {
+          // Player is not in the game yet, add them
           if (game.players.length < 8 && game.status === "waiting") {
             const user = await User.findById(userId);
             if (!user) {
+              joiningPlayers.delete(joinKey); // Clear join status
               socket.emit("gameError", { message: "User not found" });
               return;
             }
@@ -100,50 +127,149 @@ module.exports = (io) => {
               isAllIn: false,
             });
 
-            await game.save();
+            // Save with retry logic for version conflicts
+            let saved = false;
+            let attempts = 0;
+            const maxAttempts = 3;
+
+            while (!saved && attempts < maxAttempts) {
+              try {
+                await game.save();
+                saved = true;
+              } catch (saveError) {
+                if (saveError.name === "VersionError") {
+                  attempts++;
+                  console.log(
+                    `Version conflict on join (attempt ${attempts}), retrying...`
+                  );
+
+                  // Get a fresh copy
+                  const freshGame = await Game.findOne({ gameId });
+                  if (!freshGame) {
+                    throw new Error("Game no longer exists");
+                  }
+
+                  // Check if player was added by another process
+                  const playerExists = freshGame.players.some(
+                    (p) => String(p.user) === String(userId)
+                  );
+
+                  if (playerExists) {
+                    console.log(
+                      `Player ${username} was already added by another process`
+                    );
+                    saved = true; // Consider it saved
+                  } else {
+                    // Player still needs to be added
+                    freshGame.players.push({
+                      user: userId,
+                      username,
+                      position: freshGame.players.length,
+                      chips: 0,
+                      totalChips: user.balance > 1000 ? 1000 : user.balance,
+                      hand: [],
+                      isActive: true,
+                      hasFolded: false,
+                      hasActed: false,
+                      isAllIn: false,
+                    });
+
+                    // Try to save the fresh document
+                    try {
+                      await freshGame.save();
+                      saved = true;
+                    } catch (retryError) {
+                      if (attempts >= maxAttempts - 1) {
+                        throw retryError;
+                      }
+                      // Otherwise continue to next iteration
+                    }
+                  }
+
+                  // Short delay before retry
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, 100 * attempts)
+                  );
+                } else {
+                  // Not a version error, rethrow
+                  throw saveError;
+                }
+              }
+            }
+
             playerAdded = true;
-
-            // Emit a specific event when a new player joins
-            // This goes to ALL clients in the room, including the sender
-            gameIo.to(gameId).emit("playerJoined", {
-              userId,
-              username,
-              position: game.players.length - 1,
-            });
-
             console.log(`New player ${username} added to game ${gameId}`);
           } else {
+            joiningPlayers.delete(joinKey); // Clear join status
             socket.emit("gameError", { message: "Cannot join the game" });
             return;
+          }
+        } else {
+          // Player already exists in the game
+          // If they were inactive, reactivate them
+          if (!game.players[existingPlayerIndex].isActive) {
+            game.players[existingPlayerIndex].isActive = true;
+            await game.save();
+
+            playerReactivated = true;
+            console.log(`Player ${username} reactivated in game ${gameId}`);
+          } else {
+            console.log(`Player ${username} already active in game ${gameId}`);
           }
         }
 
         // Always send updated game state to all players in the room
-        // This is critical to keep everyone in sync
-        const sanitizedGame = gameLogic.getSanitizedGameState(game);
+        // Use findOne to get the latest state
+        const latestGame = await Game.findOne({ gameId });
+        const sanitizedGame = gameLogic.getSanitizedGameState(latestGame);
 
-        if (!sanitizedGame.creator && game.creator) {
-          sanitizedGame.creator = game.creator;
-          console.log("Adding creator info to sanitizedGame:", game.creator);
+        if (!sanitizedGame.creator && latestGame.creator) {
+          sanitizedGame.creator = latestGame.creator;
         }
 
+        // Emit game update to everyone
         gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
 
+        // Send creator info to the new player
         socket.emit("creatorInfo", {
-          creator: game.creator,
+          creator: latestGame.creator,
           currentUserId: userId,
-          isCreator: game.creator && game.creator.user.toString() === userId,
+          isCreator:
+            latestGame.creator && latestGame.creator.user.toString() === userId,
         });
 
-        // Send a chat message about the new player joining
+        // Only send join notifications for newly added players
         if (playerAdded) {
+          // Emit a specific event when a new player joins
+          gameIo.to(gameId).emit("playerJoined", {
+            userId,
+            username,
+            position: latestGame.players.length - 1,
+          });
+
+          // Send a chat message about the new player joining
           gameIo.to(gameId).emit("chatMessage", {
             type: "system",
             message: `${username} has joined the game`,
             timestamp: new Date(),
           });
+        } else if (playerReactivated) {
+          // Send a chat message about the player rejoining
+          gameIo.to(gameId).emit("chatMessage", {
+            type: "system",
+            message: `${username} has rejoined the game`,
+            timestamp: new Date(),
+          });
         }
+
+        // Clear the joining status now that we're done
+        joiningPlayers.delete(joinKey);
       } catch (error) {
+        // Clear joining status on error
+        if (gameId && userId) {
+          joiningPlayers.delete(`${gameId}-${userId}`);
+        }
+
         console.error("Join game socket error:", error);
         socket.emit("gameError", {
           message: "Server error",
@@ -235,7 +361,7 @@ module.exports = (io) => {
       console.log(
         `Received startGame event for game ${gameId} from user ${userId}`
       );
-    
+
       try {
         // Find the game with lean() for better performance
         const game = await Game.findOne({ gameId });
@@ -243,11 +369,11 @@ module.exports = (io) => {
           console.log(`Game not found: ${gameId}`);
           return socket.emit("gameError", { message: "Game not found" });
         }
-    
+
         // Check if player is the creator
         const creatorId = game.creator.user.toString();
         const requestUserId = userId.toString();
-    
+
         if (creatorId !== requestUserId) {
           console.log(
             `User ${userId} is not the creator (${creatorId}) of game ${gameId}`
@@ -256,7 +382,7 @@ module.exports = (io) => {
             message: "Only the creator can start the game",
           });
         }
-    
+
         // Check if enough players
         if (game.players.length < 2) {
           console.log(
@@ -266,7 +392,7 @@ module.exports = (io) => {
             message: "Need at least 2 players to start",
           });
         }
-    
+
         // Check if game already started
         if (game.status !== "waiting") {
           console.log(
@@ -276,55 +402,58 @@ module.exports = (io) => {
             message: "Game has already been started",
           });
         }
-    
+
         console.log(
           `Starting game ${gameId} with ${game.players.length} players`
         );
-    
+
         // IMPORTANT FIX: Create a completely fresh deck with enhanced shuffling
-        const cardDeck = require('../utils/cardDeck');
+        const cardDeck = require("../utils/cardDeck");
         game.deck = cardDeck.getFreshShuffledDeck();
-        
+
         // Log deck statistics to verify proper shuffling
         const deckStats = cardDeck.getDeckStats(game.deck);
         console.log(`New game deck statistics:`, deckStats);
-    
+
         // Update game status
         game.status = "active";
         game.bettingRound = "preflop";
         game.dealerPosition = 0; // First player is dealer for first hand
         await game.save();
-    
+
         // Send system message about game starting
         gameIo.to(gameId).emit("chatMessage", {
           type: "system",
           message: "The game has started",
           timestamp: new Date(),
         });
-    
+
         console.log(`Game ${gameId} status updated to active`);
-    
+
         // Initialize game with first hand - WRAPPED IN TRY/CATCH WITH BETTER ERROR HANDLING
         try {
           // Start a new hand with our enhanced shuffled deck
           const updatedGame = await gameLogic.startNewHand(game);
           console.log(`First hand started for game ${gameId}`);
-    
+
           // Log the cards dealt to each player for verification
-          updatedGame.players.forEach(player => {
+          updatedGame.players.forEach((player) => {
             if (player.hand && player.hand.length) {
-              console.log(`Player ${player.username} cards:`, player.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+              console.log(
+                `Player ${player.username} cards:`,
+                player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+              );
             }
           });
-    
+
           // VALIDATION: Check for duplicate cards
           try {
             gameLogic.validateGameCards(updatedGame);
           } catch (validationError) {
             console.error(`Card validation failed: ${validationError.message}`);
-            
+
             // Try to fix the issue
-            const debugging = require('../utils/debugging');
+            const debugging = require("../utils/debugging");
             try {
               await debugging.fixDuplicateCards(updatedGame);
               // Re-validate after fixing
@@ -337,21 +466,21 @@ module.exports = (io) => {
               return;
             }
           }
-    
+
           // Emit game state to all players
           gameIo
             .to(gameId)
-            .emit(
-              "gameStarted",
-              gameLogic.getSanitizedGameState(updatedGame)
-            );
+            .emit("gameStarted", gameLogic.getSanitizedGameState(updatedGame));
           console.log(`Game started event emitted for game ${gameId}`);
-    
+
           // Emit private cards to each player
           for (const player of updatedGame.players) {
             const socketId = userSockets.get(player.user.toString());
             if (socketId) {
-              console.log(`Sending cards to player ${player.username}:`, player.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+              console.log(
+                `Sending cards to player ${player.username}:`,
+                player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+              );
               gameIo.to(socketId).emit("dealCards", {
                 hand: player.hand,
               });
@@ -361,19 +490,19 @@ module.exports = (io) => {
               );
             }
           }
-    
+
           // Start the first betting round
           const gameWithBetting = await gameLogic.startBettingRound(
             updatedGame
           );
-    
+
           // Notify the current player it's their turn
           if (gameWithBetting.currentTurn) {
             const currentPlayer = gameWithBetting.players.find(
               (p) =>
                 p.user.toString() === gameWithBetting.currentTurn.toString()
             );
-    
+
             if (currentPlayer) {
               const socketId = userSockets.get(currentPlayer.user.toString());
               if (socketId) {
@@ -384,13 +513,13 @@ module.exports = (io) => {
                   ),
                   timeLimit: 30, // 30 seconds to make a decision
                 });
-    
+
                 // Let everyone know whose turn it is
                 gameIo.to(gameId).emit("turnChanged", {
                   playerId: currentPlayer.user.toString(),
                   username: currentPlayer.username,
                 });
-    
+
                 console.log(`It's ${currentPlayer.username}'s turn`);
               } else {
                 console.log(
@@ -403,7 +532,7 @@ module.exports = (io) => {
           } else {
             console.log(`No current turn set for game ${gameId}`);
           }
-    
+
           // Update game state for all players
           gameIo
             .to(gameId)
@@ -415,13 +544,13 @@ module.exports = (io) => {
         } catch (gameInitError) {
           console.error(`Error initializing game: ${gameInitError.message}`);
           console.error(gameInitError.stack);
-    
+
           // Try to recover
           try {
             // Reset the game status
             game.status = "waiting";
             await game.save();
-            
+
             // Notify clients about the error
             socket.emit("gameError", {
               message: "Failed to initialize game. Please try again.",
@@ -459,6 +588,108 @@ module.exports = (io) => {
           // Check if it's player's turn
           if (game.currentTurn.toString() !== userId) {
             socket.emit("gameError", { message: "Not your turn" });
+            if (nextSocketId && nextPlayer) {
+              // Send turn information to the next player
+              gameIo.to(nextSocketId).emit("yourTurn", {
+                options: gameLogic.getPlayerOptions(game, nextPlayerId),
+                timeLimit: 60, // 60 seconds turn timer
+              });
+
+              // Notify all players about turn change
+              gameIo.to(gameId).emit("turnChanged", {
+                playerId: nextPlayerId.toString(),
+                username: nextPlayer.username,
+                timeLimit: 60,
+              });
+
+              // Set a server-side timer to auto-fold if player doesn't act
+              const timerKey = `${gameId}-${nextPlayerId}`;
+
+              // Clear any existing timer for this player
+              if (turnTimers[timerKey]) {
+                clearTimeout(turnTimers[timerKey]);
+              }
+
+              // Set a new timer (60 seconds)
+              turnTimers[timerKey] = setTimeout(async () => {
+                try {
+                  // Check if it's still this player's turn
+                  const currentGame = await Game.findOne({ gameId });
+                  if (
+                    currentGame &&
+                    currentGame.status === "active" &&
+                    currentGame.currentTurn &&
+                    currentGame.currentTurn.toString() ===
+                      nextPlayerId.toString()
+                  ) {
+                    console.log(
+                      `Auto-folding for player ${nextPlayer.username} due to timeout`
+                    );
+
+                    // Process automatic fold
+                    await gameLogic.processPlayerAction(
+                      currentGame,
+                      nextPlayerId,
+                      "fold"
+                    );
+
+                    // Notify players
+                    gameIo.to(gameId).emit("actionTaken", {
+                      playerId: nextPlayerId,
+                      action: "fold",
+                      amount: 0,
+                      auto: true,
+                      reason: "timeout",
+                    });
+
+                    // Send chat message
+                    gameIo.to(gameId).emit("chatMessage", {
+                      type: "system",
+                      message: `${nextPlayer.username} automatically folded due to time limit`,
+                      timestamp: new Date(),
+                    });
+
+                    // Update game state for all clients
+                    gameIo
+                      .to(gameId)
+                      .emit(
+                        "gameUpdate",
+                        gameLogic.getSanitizedGameState(currentGame)
+                      );
+
+                    // Handle next steps based on fold result
+                    const nextPlayer = currentGame.players.find(
+                      (p) =>
+                        p.user.toString() ===
+                        currentGame.currentTurn?.toString()
+                    );
+
+                    if (nextPlayer) {
+                      const nextSocketId = userSockets.get(
+                        nextPlayer.user.toString()
+                      );
+                      if (nextSocketId) {
+                        gameIo.to(nextSocketId).emit("yourTurn", {
+                          options: gameLogic.getPlayerOptions(
+                            currentGame,
+                            nextPlayer.user
+                          ),
+                          timeLimit: 60,
+                        });
+
+                        gameIo.to(gameId).emit("turnChanged", {
+                          playerId: nextPlayer.user.toString(),
+                          username: nextPlayer.username,
+                          timeLimit: 60,
+                        });
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.error("Auto-fold error:", error);
+                }
+              }, 60000); // 60 seconds
+            }
             return;
           }
 
@@ -598,27 +829,32 @@ module.exports = (io) => {
                     if (socketId) {
                       // Ensure we're sending a properly formatted hand object
                       // IMPORTANT: Force a clean hand array to avoid reference issues
-                      const cleanHand = player.hand.map(card => ({
+                      const cleanHand = player.hand.map((card) => ({
                         suit: card.suit,
                         rank: card.rank,
                         value: card.value,
-                        code: card.code
+                        code: card.code,
                       }));
-                      
-                      console.log(`EXPLICITLY sending new cards to ${player.username}:`, 
-                        cleanHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
-                        
+
+                      console.log(
+                        `EXPLICITLY sending new cards to ${player.username}:`,
+                        cleanHand
+                          .map((c) => `${c.rank} of ${c.suit}`)
+                          .join(", ")
+                      );
+
                       // Send with a distinct event name to ensure client processing
                       gameIo.to(socketId).emit("dealCards", {
                         hand: cleanHand,
                         newHand: true, // Add a flag to indicate this is from a new hand
-                        timestamp: Date.now() // Add timestamp to prevent caching
+                        timestamp: Date.now(), // Add timestamp to prevent caching
                       });
-                      
+
                       // Also send a direct message to ensure the client updates
                       gameIo.to(socketId).emit("forceCardUpdate", {
                         hand: cleanHand,
-                        message: "Your cards have been updated for the new hand"
+                        message:
+                          "Your cards have been updated for the new hand",
                       });
                     }
                   });
@@ -832,27 +1068,32 @@ module.exports = (io) => {
                       if (socketId) {
                         // Ensure we're sending a properly formatted hand object
                         // IMPORTANT: Force a clean hand array to avoid reference issues
-                        const cleanHand = player.hand.map(card => ({
+                        const cleanHand = player.hand.map((card) => ({
                           suit: card.suit,
                           rank: card.rank,
                           value: card.value,
-                          code: card.code
+                          code: card.code,
                         }));
-                        
-                        console.log(`EXPLICITLY sending new cards to ${player.username}:`, 
-                          cleanHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
-                          
+
+                        console.log(
+                          `EXPLICITLY sending new cards to ${player.username}:`,
+                          cleanHand
+                            .map((c) => `${c.rank} of ${c.suit}`)
+                            .join(", ")
+                        );
+
                         // Send with a distinct event name to ensure client processing
                         gameIo.to(socketId).emit("dealCards", {
                           hand: cleanHand,
                           newHand: true, // Add a flag to indicate this is from a new hand
-                          timestamp: Date.now() // Add timestamp to prevent caching
+                          timestamp: Date.now(), // Add timestamp to prevent caching
                         });
-                        
+
                         // Also send a direct message to ensure the client updates
                         gameIo.to(socketId).emit("forceCardUpdate", {
                           hand: cleanHand,
-                          message: "Your cards have been updated for the new hand"
+                          message:
+                            "Your cards have been updated for the new hand",
                         });
                       }
                     });
@@ -1086,8 +1327,8 @@ module.exports = (io) => {
           });
         }
 
-        // Find the game
-        const game = await Game.findOne({ gameId });
+        // Find the game - use fresh findOne to avoid version conflicts
+        let game = await Game.findOne({ gameId });
         if (!game) {
           socket.emit("gameError", { message: "Game not found" });
           return;
@@ -1107,10 +1348,15 @@ module.exports = (io) => {
 
         // Handle differently based on game status
         if (game.status === "waiting") {
-          // Remove player from the game completely
+          // In waiting status, completely remove the player from the game
           game.players.splice(playerIndex, 1);
+
+          // Update positions for remaining players
+          for (let i = 0; i < game.players.length; i++) {
+            game.players[i].position = i;
+          }
         } else {
-          // Mark player as inactive, but keep their data
+          // In active game, mark player as inactive but keep their data
           game.players[playerIndex].isActive = false;
           game.players[playerIndex].hasFolded = true;
 
@@ -1118,6 +1364,7 @@ module.exports = (io) => {
           const activePlayers = game.players.filter(
             (p) => p.isActive && !p.hasFolded
           );
+
           if (activePlayers.length < 2) {
             // End the current hand, award pot to remaining player
             if (activePlayers.length === 1) {
@@ -1160,18 +1407,20 @@ module.exports = (io) => {
                 game,
                 game.players.findIndex((p) => p.user.toString() === userId)
               );
+
               game.currentTurn = nextPlayerId;
 
               // Notify next player
               const nextPlayer = game.players.find(
                 (p) => p.user.toString() === nextPlayerId.toString()
               );
+
               const nextSocketId = userSockets.get(nextPlayerId.toString());
 
               if (nextSocketId && nextPlayer) {
                 gameIo.to(nextSocketId).emit("yourTurn", {
                   options: gameLogic.getPlayerOptions(game, nextPlayerId),
-                  timeLimit: 30,
+                  timeLimit: 60,
                 });
 
                 gameIo.to(gameId).emit("turnChanged", {
@@ -1188,8 +1437,71 @@ module.exports = (io) => {
           }
         }
 
-        // Save the updated game
-        await game.save();
+        // Save the updated game with retry logic for version conflicts
+        let saved = false;
+        let attempts = 0;
+        const maxAttempts = 3;
+
+        while (!saved && attempts < maxAttempts) {
+          try {
+            await game.save();
+            saved = true;
+          } catch (saveError) {
+            // If it's a version error, try to refresh the document and reapply changes
+            if (saveError.name === "VersionError") {
+              attempts++;
+              console.log(
+                `Version conflict detected (attempt ${attempts}), refreshing document...`
+              );
+
+              // Get a fresh copy of the game
+              game = await Game.findOne({ gameId });
+
+              if (!game) {
+                throw new Error("Game no longer exists");
+              }
+
+              // Re-apply our changes to the fresh document
+              if (game.status === "waiting") {
+                // Find the player again in case the player list changed
+                const newPlayerIndex = game.players.findIndex(
+                  (p) => p.user.toString() === userId
+                );
+
+                if (newPlayerIndex !== -1) {
+                  game.players.splice(newPlayerIndex, 1);
+
+                  // Update positions for remaining players
+                  for (let i = 0; i < game.players.length; i++) {
+                    game.players[i].position = i;
+                  }
+                }
+              } else {
+                // Find the player again
+                const newPlayerIndex = game.players.findIndex(
+                  (p) => p.user.toString() === userId
+                );
+
+                if (newPlayerIndex !== -1) {
+                  game.players[newPlayerIndex].isActive = false;
+                  game.players[newPlayerIndex].hasFolded = true;
+                }
+              }
+
+              // Wait a moment before retrying to reduce chance of conflict
+              await new Promise((resolve) =>
+                setTimeout(resolve, 100 * attempts)
+              );
+            } else {
+              // If it's not a version error, rethrow it
+              throw saveError;
+            }
+          }
+        }
+
+        if (!saved) {
+          throw new Error(`Failed to save game after ${maxAttempts} attempts`);
+        }
 
         // Leave the socket room
         socket.leave(gameId);
@@ -1212,10 +1524,12 @@ module.exports = (io) => {
           timestamp: new Date(),
         });
 
-        // Update game state for all clients
-        gameIo
-          .to(gameId)
-          .emit("gameUpdate", gameLogic.getSanitizedGameState(game));
+        // Update game state for all clients - use findById to get the latest state
+        const updatedGame = await Game.findOne({ gameId });
+        if (updatedGame) {
+          const sanitizedGame = gameLogic.getSanitizedGameState(game);
+          gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
+        }
 
         // Acknowledge successful leave
         socket.emit("leaveGameSuccess");
@@ -1503,6 +1817,104 @@ module.exports = (io) => {
         console.error(`Initialize game error for game ${gameId}:`, error);
         socket.emit("gameError", {
           message: "Error initializing game",
+          details: error.message,
+        });
+      }
+    });
+
+    socket.on("reconnect", async ({ userId, gameId, username }) => {
+      try {
+        if (!userId || !gameId) {
+          return socket.emit("gameError", {
+            message: "Missing reconnection data",
+          });
+        }
+
+        console.log(
+          `User ${username || userId} attempting to reconnect to game ${gameId}`
+        );
+
+        // Update socket mappings
+        userSockets.set(userId, socket.id);
+        socket.userId = userId;
+        socket.join(gameId);
+        socket.gameId = gameId;
+
+        // Add to room tracking
+        if (!gameRooms.has(gameId)) {
+          gameRooms.set(gameId, new Set());
+        }
+        gameRooms.get(gameId).add(socket.id);
+
+        // Find the game
+        const game = await Game.findOne({ gameId });
+        if (!game) {
+          socket.emit("gameError", {
+            message: "Game not found during reconnection",
+          });
+          return;
+        }
+
+        // Find the player
+        const playerIndex = game.players.findIndex(
+          (p) => p.user.toString() === userId
+        );
+        if (playerIndex === -1) {
+          socket.emit("gameError", { message: "Player not found in game" });
+          return;
+        }
+
+        // Mark player as reconnected if they were disconnected
+        if (!game.players[playerIndex].isActive) {
+          game.players[playerIndex].isActive = true;
+
+          // Save the game and notify other players
+          await game.save();
+
+          gameIo.to(gameId).emit("chatMessage", {
+            type: "system",
+            message: `${game.players[playerIndex].username} has reconnected to the game`,
+            timestamp: new Date(),
+          });
+        }
+
+        // Send reconnection confirmation
+        socket.emit("reconnectConfirmed", {
+          success: true,
+          message: "Successfully reconnected to game",
+        });
+
+        // Send game state to the reconnected player
+        const sanitizedGame = gameLogic.getSanitizedGameState(game);
+        socket.emit("gameUpdate", sanitizedGame);
+
+        // Send private cards if the game is active
+        if (game.status === "active") {
+          const player = game.players[playerIndex];
+          if (player.hand && player.hand.length > 0) {
+            socket.emit("dealCards", { hand: player.hand });
+          }
+
+          // If it's this player's turn, make sure they know
+          if (game.currentTurn && game.currentTurn.toString() === userId) {
+            socket.emit("yourTurn", {
+              options: gameLogic.getPlayerOptions(game, userId),
+              timeLimit: 60, // 60 seconds turn timer
+            });
+          }
+        }
+
+        // Notify other players about the reconnection
+        gameIo.to(gameId).emit("playerConnectionChange", {
+          userId,
+          username: game.players[playerIndex].username,
+          connected: true,
+          timestamp: new Date(),
+        });
+      } catch (error) {
+        console.error("Reconnection error:", error);
+        socket.emit("gameError", {
+          message: "Error during reconnection",
           details: error.message,
         });
       }

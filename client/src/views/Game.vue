@@ -7,6 +7,17 @@
       {{ errorMessage }}
     </div>
 
+    <div v-if="errorMessage" class="error-message">
+      {{ errorMessage }}
+
+      <!-- Add this connection fix button -->
+      <div class="error-actions">
+        <button @click="diagnoseAndFix" class="btn-fix">
+          Diagnose & Fix Connection
+        </button>
+      </div>
+    </div>
+
     <div v-if="!currentGame" class="loading">
       Loading game...
     </div>
@@ -31,12 +42,26 @@
         <!-- Player actions -->
         <PlayerActions v-if="isYourTurn || shouldShowActions()" :availableActions="availableActions"
           :currentGame="currentGame" :betAmount="betAmount" :raiseAmount="raiseAmount"
-          @updateBetAmount="betAmount = $event" @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction"
+          :actionTimeLimit="actionTimeLimit" @updateBetAmount="betAmount = $event"
+          @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction" @timeWarning="handleTimeWarning"
           @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
       </div>
 
-      <!-- Game chat/log -->
-      <GameLog :gameLog="gameLog" />
+      <!-- Game chat/log (flex container for chat and log) -->
+      <div class="game-info-container">
+        <GameLog :gameLog="gameLog" />
+        <GameChat :gameId="gameId" :currentUser="currentUser" :isConnected="isConnected" />
+      </div>
+    </div>
+
+    <WinnerDisplay :result="currentHandResult" :visible="showWinnerDisplay" :formatCard="formatCard" :displayTime="15"
+      @close="closeWinnerDisplay" />
+
+    <div v-if="isReconnecting" class="reconnecting-overlay">
+      <div class="reconnecting-message">
+        <div class="spinner"></div>
+        <p>Reconnecting to game...</p>
+      </div>
     </div>
 
     <!-- Debug toggle button -->
@@ -63,6 +88,9 @@ import GameLog from '@/components/Game/GameLog.vue';
 import GameDebugPanel from '@/components/Game/GameDebugPanel.vue';
 import GameHandlers from '@/components/Game/GameHandlers';
 import { formatCard, getDefaultOptions, addToGameLog } from '@/utils/gameUtils';
+import GameChat from '@/components/Game/GameChat.vue';
+import WinnerDisplay from '@/components/Game/WinnerDisplay.vue';
+import io from 'socket.io-client';
 
 export default {
   name: 'Game',
@@ -74,7 +102,9 @@ export default {
     PlayerList,
     PlayerActions,
     GameLog,
-    GameDebugPanel
+    GameDebugPanel,
+    GameChat,    // Add this
+    WinnerDisplay
   },
 
   data() {
@@ -102,6 +132,10 @@ export default {
       handlers: null, // Will store event handlers
       eventHandlers: [], // Track registered handlers for cleanup
       isYourTurn: false,
+      showWinnerDisplay: false,
+      currentHandResult: null,
+      actionTimeLimit: 60,
+      isReconnecting: false,
     };
   },
 
@@ -196,6 +230,7 @@ export default {
       // Update local state
       this.isYourTurn = true;
       this.availableActions = data.options || [];
+      this.actionTimeLimit = data.timeLimit || 60;  // Get the time limit from the server
 
       // Update store state as well
       this.$store.commit('SET_YOUR_TURN', true);
@@ -366,6 +401,11 @@ export default {
         return;
       }
 
+      // Clear any existing timer by calling stopTimer on the TurnTimer component
+      if (this.$refs.turnTimer) {
+        this.$refs.turnTimer.stopTimer();
+      }
+
       // Clear any existing timer
       this.clearActionTimer();
 
@@ -424,7 +464,7 @@ export default {
       this.lastLogMessages = result.lastLogMessages;
     },
 
-    async setupSocketConnection() {
+    async _originalSetupSocketConnection() {
       try {
         // Initialize the socket service and connect to the game
         await SocketService.init();
@@ -616,6 +656,226 @@ export default {
       // Log for debugging
       console.log("Forced game component update");
     },
+    handleHandResult(result) {
+      this.currentHandResult = result;
+      this.showWinnerDisplay = true;
+
+      // Add a message to the game log
+      const winners = result.winners || [];
+      if (winners.length > 0) {
+        const winnerNames = winners.map(w => w.username).join(', ');
+        this.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
+      } else {
+        this.addToLog('Hand complete.');
+      }
+    },
+
+    closeWinnerDisplay() {
+      this.showWinnerDisplay = false;
+    },
+
+    handleTimeWarning() {
+      // This could show a notification or play a sound
+      this.addToLog('Warning: 15 seconds remaining for your turn');
+    },
+    // Reconnection handling
+    async checkForReconnection() {
+      const reconnectInfo = SocketService.checkForPendingReconnection();
+      if (reconnectInfo && reconnectInfo.gameId === this.gameId) {
+        console.log('Found pending reconnection:', reconnectInfo);
+        this.isReconnecting = true;
+
+        try {
+          // Attempt to reconnect
+          const success = await SocketService.reconnectToGame(
+            reconnectInfo.gameId,
+            reconnectInfo.userId,
+            reconnectInfo.username
+          );
+
+          if (success) {
+            this.addToLog('Successfully reconnected to game');
+          } else {
+            this.addToLog('Failed to reconnect. Please refresh the page.');
+          }
+        } catch (error) {
+          console.error('Reconnection error:', error);
+          this.addToLog('Error during reconnection. Please refresh the page.');
+        } finally {
+          this.isReconnecting = false;
+        }
+      }
+    },
+    async setupSocketConnection() {
+      const result = await this._originalSetupSocketConnection();
+
+      // Add custom reconnection handling
+      if (result && SocketService.gameSocket) {
+        // Setup reconnection handlers
+        if (typeof SocketService.setupReconnectionHandlers === 'function') {
+          SocketService.setupReconnectionHandlers();
+        }
+
+        // Check for pending reconnection
+        if (typeof SocketService.checkForPendingReconnection === 'function') {
+          this.checkForReconnection();
+        }
+      }
+
+      return result;
+    },
+
+    async diagnoseAndFix() {
+      this.SET_ERROR_MESSAGE('Diagnosing connection issues...');
+
+      try {
+        // First, check server status
+        try {
+          const response = await fetch('/api/server-status');
+          if (response.ok) {
+            const status = await response.json();
+            console.log('Server status:', status);
+            this.addToLog('Server is running, attempting to fix socket connection...');
+          }
+        } catch (error) {
+          console.warn('Could not check server status:', error);
+          // Continue anyway - error checking server doesn't mean we can't fix the socket
+        }
+
+        // Force disconnect any existing socket
+        if (SocketService.gameSocket) {
+          SocketService.gameSocket.disconnect();
+          SocketService.gameSocket = null;
+        }
+
+        // Direct socket connection with no dependencies
+        const socketUrl = 'http://localhost:5000';
+        console.log('Connecting directly to:', socketUrl);
+
+        // Import io directly to avoid "io is not defined" errors
+        try {
+          // Try to use the imported io if available
+          const io = (await import('socket.io-client')).default;
+
+          // Create a new socket with polling (most reliable)
+          const socket = io(`${socketUrl}/game`, {
+            transports: ['polling'],
+            reconnection: true,
+            timeout: 20000,
+            forceNew: true
+          });
+
+          // Set up connection events
+          await new Promise((resolve, reject) => {
+            // Connection successful
+            socket.on('connect', () => {
+              console.log('Socket connected successfully:', socket.id);
+              SocketService.gameSocket = socket;
+              SocketService.isConnected = true;
+              this.isConnected = true;
+
+              // Register user
+              if (this.currentUser && this.currentUser.id) {
+                socket.emit('register', { userId: this.currentUser.id });
+
+                // Join game
+                if (this.gameId) {
+                  socket.emit('joinGame', {
+                    gameId: this.gameId,
+                    userId: this.currentUser.id,
+                    username: this.currentUser.username
+                  });
+
+                  console.log(`Joined game ${this.gameId}`);
+                }
+              }
+
+              resolve(true);
+            });
+
+            // Connection error
+            socket.on('connect_error', (error) => {
+              console.error('Socket connection error:', error);
+              reject(new Error(`Socket connection failed: ${error.message}`));
+            });
+
+            // Set timeout
+            setTimeout(() => {
+              if (!socket.connected) {
+                reject(new Error('Connection timeout after 10 seconds'));
+              }
+            }, 10000);
+          });
+
+          // If we get here, connection was successful
+          this.SET_ERROR_MESSAGE('');
+          this.addToLog('Connection fixed! Game loading...');
+
+          // Request game state
+          setTimeout(() => {
+            if (SocketService.gameSocket && SocketService.isConnected) {
+              SocketService.gameSocket.emit('requestGameUpdate', {
+                gameId: this.gameId,
+                userId: this.currentUser.id
+              });
+            }
+          }, 1000);
+
+        } catch (importError) {
+          console.error('Error importing socket.io-client:', importError);
+
+          // Try using window.io as fallback if available
+          if (typeof window.io !== 'undefined') {
+            this.addToLog('Trying to connect using CDN fallback...');
+
+            const socket = window.io(`${socketUrl}/game`, {
+              transports: ['polling'],
+              reconnection: true,
+              timeout: 20000,
+              forceNew: true
+            });
+
+            // Similar connection logic as above
+            // ... (same code as above for socket events)
+          } else {
+            throw new Error('Socket.IO client not available');
+          }
+        }
+
+      } catch (error) {
+        console.error('Connection fix failed:', error);
+        this.SET_ERROR_MESSAGE(`Connection failed: ${error.message}. Try refreshing the page.`);
+      }
+    },
+    async checkServerStatus() {
+      try {
+        // Call the server status endpoint
+        const response = await fetch('/api/server-status');
+
+        if (!response.ok) {
+          return {
+            success: false,
+            message: `Server returned status ${response.status}`,
+            details: await response.text()
+          };
+        }
+
+        const status = await response.json();
+        console.log('Server status:', status);
+
+        return {
+          success: true,
+          status
+        };
+      } catch (error) {
+        console.error('Error checking server status:', error);
+        return {
+          success: false,
+          message: 'Could not connect to server',
+          error
+        };
+      }
+    }
   },
 
   created() {
@@ -660,38 +920,38 @@ export default {
 
     try {
       // Fetch game data with retry logic
-      await this.fetchGameWithRetry(this.gameId, 3);
+      this.fetchGameWithRetry(this.gameId, 3).then(() => {
+        if (this.currentGame) {
+          this.addToLog(`Joined game #${this.gameId}`);
 
-      if (this.currentGame) {
-        this.addToLog(`Joined game #${this.gameId}`);
-
-        // Update local game state based on fetched data
-        if (this.currentGame.status === 'active') {
-          this.gameInProgress = true;
-          this.addToLog('Game is already active');
-        }
-
-        // Set up socket connection
-        await this.setupSocketConnection();
-
-        // Once connected, ensure we get regular updates
-        if (this.currentUser && this.gameId) {
-          // Request a game state update
-          if (SocketService.isSocketConnected()) {
-            this.requestStateUpdate();
+          // Update local game state based on fetched data
+          if (this.currentGame.status === 'active') {
+            this.gameInProgress = true;
+            this.addToLog('Game is already active');
           }
 
-          // Additional check for active but uninitialized game
-          setTimeout(() => {
-            if (this.currentGame?.status === 'active' && !this.gameInitialized && this.isCreator) {
-              console.log('Game is active but not initialized, requesting initialization');
-              this.requestInitialization();
+          // Set up socket connection
+          this.setupSocketConnection().then(() => {
+            // Once connected, ensure we get regular updates
+            if (this.currentUser && this.gameId) {
+              // Request a game state update
+              if (SocketService.isSocketConnected()) {
+                this.requestStateUpdate();
+              }
+
+              // Additional check for active but uninitialized game
+              setTimeout(() => {
+                if (this.currentGame?.status === 'active' && !this.gameInitialized && this.isCreator) {
+                  console.log('Game is active but not initialized, requesting initialization');
+                  this.requestInitialization();
+                }
+              }, 2000);
             }
-          }, 2000);
+          });
+        } else {
+          throw new Error('Failed to load game data');
         }
-      } else {
-        throw new Error('Failed to load game data');
-      }
+      });
     } catch (error) {
       console.error('Error setting up game:', error);
       this.SET_ERROR_MESSAGE('Failed to load game. Please try again.');
@@ -707,10 +967,6 @@ export default {
   },
 
   beforeDestroy() {
-    // Clear the card refresh interval
-    if (this.cardRefreshInterval) {
-      clearInterval(this.cardRefreshInterval);
-    }
     // Remove event listeners
     this.eventHandlers.forEach(({ event, handler }) => {
       SocketService.off(event, handler);
@@ -718,6 +974,9 @@ export default {
 
     // Clear any timers
     this.clearActionTimer();
+
+    // Clear reconnection info
+    SocketService.clearReconnectionInfo();
 
     // Clear error message
     this.clearErrorMessage();
@@ -740,6 +999,25 @@ export default {
   margin-bottom: 15px;
 }
 
+.error-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: center;
+}
+
+.btn-fix {
+  background-color: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+.btn-fix:hover {
+  background-color: #2980b9;
+}
+
 .loading {
   display: flex;
   justify-content: center;
@@ -756,7 +1034,63 @@ export default {
   grid-template-areas:
     "status status"
     "table table"
-    "log log";
+    "info info";
+}
+
+.game-info-container {
+  grid-area: info;
+  display: flex;
+  gap: 20px;
+}
+
+.game-log {
+  flex: 1;
+  background-color: #2a2a2a;
+  border-radius: 8px;
+  padding: 15px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.reconnecting-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 2000;
+}
+
+.reconnecting-message {
+  background-color: #2a2a2a;
+  padding: 20px;
+  border-radius: 8px;
+  text-align: center;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.spinner {
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top: 4px solid #3f8c6e;
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 15px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 .game-table {
@@ -788,7 +1122,11 @@ export default {
     grid-template-areas:
       "status"
       "table"
-      "log";
+      "info";
+  }
+
+  .game-info-container {
+    flex-direction: column;
   }
 }
 

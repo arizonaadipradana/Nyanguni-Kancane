@@ -93,15 +93,63 @@ app.use((req, res, next) => {
 // Socket.io setup with simplified CORS
 const io = socketIO(server, {
   cors: {
-    origin: true, // Match Express CORS settings
+    origin: '*', // More permissive for development
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
   },
-  transports: ['websocket', 'polling'],
-  pingTimeout: 10000, // Increase timeout for better connection stability
-  pingInterval: 5000
+  transports: ['polling', 'websocket'], // Try polling first as it's more reliable
+  pingTimeout: 30000, // Increased timeout for better connection stability
+  pingInterval: 10000, // More frequent pings
+  connectTimeout: 30000, // Longer connection timeout
+  allowEIO3: true, // Allow both EIO3 and EIO4 clients
+  maxHttpBufferSize: 1e8 // 100MB - larger buffer for game data
 });
+
+
+io.use((socket, next) => {
+  console.log(`Socket connection attempt from ${socket.handshake.address} with transport ${socket.conn.transport.name}`);
+  
+  // Add detailed logs for connection issues
+  socket.conn.on('packet', (packet) => {
+    if (packet.type === 'error') {
+      console.error('Socket packet error:', packet.data);
+    }
+  });
+  
+  next();
+});
+
+// Log when the socket server is ready
+io.on('connection', (socket) => {
+  console.log(`Main namespace connection: ${socket.id} from ${socket.handshake.address}`);
+  console.log('New socket connection:', socket.id);
+  
+  // Log disconnection
+  socket.on('disconnect', (reason) => {
+    console.log(`Socket ${socket.id} disconnected. Reason: ${reason}`);
+  });
+});
+
+// Add a middleware logger for the game namespace
+io.of('/game').use((socket, next) => {
+  console.log('New game namespace connection:', socket.id);
+  
+  // Log disconnection
+  socket.on('disconnect', (reason) => {
+    console.log(`Game socket ${socket.id} disconnected. Reason: ${reason}`);
+  });
+  console.log(`Game namespace connection attempt: ${socket.id} from ${socket.handshake.address}`);
+  next();
+});
+
+try {
+  const initializeSocket = require('./sockets');
+  initializeSocket(io);
+  console.log('Socket.IO initialized successfully');
+} catch (error) {
+  console.error('Socket initialization error:', error);
+}
 
 // Initialize sockets
 const initializeSocket = require('./sockets');
@@ -120,6 +168,26 @@ if (process.env.NODE_ENV === 'production') {
 
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/api/server-status', (req, res) => {
+  // Return server status information
+  const socketStatus = {
+    server: 'running',
+    serverTime: new Date().toISOString(),
+    socketServer: io ? 'running' : 'not running',
+    gameNamespace: io?.nsps?.get('/game') ? 'available' : 'not available',
+    connections: {
+      total: io ? Object.keys(io.sockets.sockets).length : 0,
+      gameNamespace: io?.nsps?.get('/game') ? io.nsps.get('/game').sockets.size : 0
+    },
+    config: {
+      port: PORT,
+      nodeEnv: process.env.NODE_ENV || 'development'
+    }
+  };
+  
+  res.json(socketStatus);
+});
 
 app.get('/api/test', (req, res) => {
   res.json({ 
@@ -226,6 +294,59 @@ app.get('/', (req, res) => {
       </html>
     `);
   }
+});
+
+app.get('/socket-test', (req, res) => {
+  res.send(`
+    <html>
+      <head>
+        <title>Socket.IO Test</title>
+        <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+        <script>
+          document.addEventListener('DOMContentLoaded', () => {
+            const log = (msg) => {
+              const div = document.createElement('div');
+              div.textContent = msg;
+              document.getElementById('log').appendChild(div);
+            };
+            
+            log('Testing socket connection...');
+            
+            // Try to connect to the socket server
+            const socket = io(window.location.origin);
+            
+            socket.on('connect', () => {
+              log('✅ Connected to main namespace');
+              log('Socket ID: ' + socket.id);
+              log('Transport: ' + socket.io.engine.transport.name);
+            });
+            
+            socket.on('connect_error', (error) => {
+              log('❌ Connection error: ' + error.message);
+            });
+            
+            // Also try the game namespace
+            const gameSocket = io(window.location.origin + '/game');
+            
+            gameSocket.on('connect', () => {
+              log('✅ Connected to game namespace');
+              log('Game Socket ID: ' + gameSocket.id);
+              log('Game Transport: ' + gameSocket.io.engine.transport.name);
+            });
+            
+            gameSocket.on('connect_error', (error) => {
+              log('❌ Game namespace connection error: ' + error.message);
+            });
+          });
+        </script>
+      </head>
+      <body style="font-family: monospace; padding: 20px;">
+        <h1>Socket.IO Test</h1>
+        <p>Testing socket connection to server...</p>
+        <div id="log" style="background: #f0f0f0; padding: 10px; border-radius: 5px;"></div>
+      </body>
+    </html>
+  `);
 });
 
 // Error handling middleware

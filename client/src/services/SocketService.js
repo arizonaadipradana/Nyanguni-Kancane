@@ -19,6 +19,7 @@ class SocketService {
     this.connectionAttempts = 0;
     this.maxConnectionAttempts = 3;
     this.connectionTimeout = null;
+    this.reconnectInfo = null;
   }
 
   /**
@@ -695,7 +696,319 @@ class SocketService {
 
     return intervalId;
   }
+  async reconnectToGame(gameId, userId, username, maxRetries = 3) {
+    console.log(`Attempting to reconnect to game ${gameId} as ${username}`);
+
+    // Store reconnection info
+    this.reconnectInfo = { gameId, userId, username };
+    localStorage.setItem("reconnectInfo", JSON.stringify(this.reconnectInfo));
+
+    let retries = 0;
+    let connected = false;
+
+    while (!connected && retries < maxRetries) {
+      try {
+        // Initialize socket first
+        await this.init();
+
+        // Then attempt to reconnect
+        await new Promise((resolve, reject) => {
+          if (!this.gameSocket || !this.isConnected) {
+            reject(new Error("Socket not connected"));
+            return;
+          }
+
+          console.log(`Sending reconnect event for game ${gameId}`);
+
+          // Use the reconnect event
+          this.gameSocket.emit("reconnect", {
+            userId,
+            gameId,
+            username,
+          });
+
+          // Set up a listener for reconnect confirmation
+          const confirmHandler = (data) => {
+            console.log("Reconnection confirmed:", data);
+            this.gameSocket.off("reconnectConfirmed", confirmHandler);
+            resolve(true);
+          };
+
+          // Listen for confirmation
+          this.gameSocket.once("reconnectConfirmed", confirmHandler);
+
+          // Set a timeout
+          setTimeout(() => {
+            this.gameSocket.off("reconnectConfirmed", confirmHandler);
+            reject(new Error("Reconnection confirmation timeout"));
+          }, 5000);
+        });
+
+        // If we get here, reconnection was successful
+        connected = true;
+        console.log(`Successfully reconnected to game ${gameId}`);
+
+        // Request an immediate game state update
+        this.requestGameUpdate(gameId, userId);
+
+        return true;
+      } catch (error) {
+        console.error(`Reconnection attempt ${retries + 1} failed:`, error);
+        retries++;
+
+        // Wait before retry
+        if (retries < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+    }
+
+    if (!connected) {
+      console.error(`Failed to reconnect after ${maxRetries} attempts`);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Check if there's a pending reconnection
+   * @returns {Object|null} Reconnection info or null if none
+   */
+  checkForPendingReconnection() {
+    try {
+      const savedInfo = localStorage.getItem("reconnectInfo");
+      if (savedInfo) {
+        return JSON.parse(savedInfo);
+      }
+    } catch (error) {
+      console.error("Error checking for reconnection:", error);
+    }
+    return null;
+  }
+
+  /**
+   * Clear reconnection information
+   */
+  clearReconnectionInfo() {
+    localStorage.removeItem("reconnectInfo");
+    this.reconnectInfo = null;
+  }
+
+  /**
+   * Handle automatic reconnection attempts
+   * This should be called when a socket disconnects
+   */
+  handleDisconnect() {
+    if (!this.reconnectInfo || !this.reconnectInfo.gameId) return;
+
+    console.log("Socket disconnected, attempting to reconnect automatically");
+
+    // Attempt to reconnect after a short delay
+    setTimeout(() => {
+      this.reconnectToGame(
+        this.reconnectInfo.gameId,
+        this.reconnectInfo.userId,
+        this.reconnectInfo.username
+      );
+    }, 1000);
+  }
+  setupReconnectionHandlers() {
+    if (!this.gameSocket) return;
+
+    this.gameSocket.on("disconnect", (reason) => {
+      console.log(`Socket disconnected: ${reason}`);
+      this.isConnected = false;
+
+      // Only attempt automatic reconnection for certain disconnect reasons
+      if (reason === "transport close" || reason === "ping timeout") {
+        this.handleDisconnect();
+      }
+    });
+  }
+
+  /**
+   * Enhanced diagnostic logging for socket connection
+   */
+  /**
+   * Enhanced diagnostic logging for socket connection
+   */
+  async diagnoseSockets() {
+    console.group("Socket Connection Diagnostics");
+
+    try {
+      // Log current state
+      console.log("Socket initialized:", !!this.gameSocket);
+      console.log("Socket connected:", this.isConnected);
+
+      if (this.gameSocket) {
+        console.log("Socket ID:", this.gameSocket.id);
+        console.log("Socket namespace:", this.gameSocket.nsp);
+        console.log("Connected:", this.gameSocket.connected);
+        console.log("Transport:", this.gameSocket.io.engine?.transport?.name);
+      }
+
+      // Try to connect with more debug info
+      console.log("Attempting test connection...");
+
+      // Load config to get socket URL - use the imported loadConfig function
+      // Import the config service if needed
+      const { loadConfig } = require("./config");
+      const config = await loadConfig();
+      console.log("Socket URL from config:", config.socketUrl);
+
+      // Or use a direct URL if loadConfig isn't available
+      const socketUrl = config?.socketUrl || "http://localhost:5000";
+
+      // Check browser WebSocket support
+      console.log("Browser supports WebSocket:", "WebSocket" in window);
+
+      // Check if the socket endpoint is reachable via fetch
+      try {
+        const response = await fetch(
+          `${socketUrl}/socket.io/?EIO=4&transport=polling`
+        );
+        console.log(
+          "Socket.IO endpoint reachable:",
+          response.status,
+          response.statusText
+        );
+        const text = await response.text();
+        console.log("Socket.IO response:", text);
+      } catch (fetchError) {
+        console.error("Socket.IO endpoint fetch error:", fetchError);
+      }
+    } catch (error) {
+      console.error("Diagnostic error:", error);
+    }
+
+    console.groupEnd();
+
+    // Return test result
+    return {
+      isSocketInitialized: !!this.gameSocket,
+      isConnected: this.isConnected,
+      socketId: this.gameSocket?.id,
+      transport: this.gameSocket?.io?.engine?.transport?.name,
+    };
+  }
+
+  /**
+   * Try all possible connection methods to see what works
+   */
+  async forceConnection(gameId, userId, username) {
+    console.log("Attempting force connection with all transport methods...");
+
+    try {
+      // Clear any existing socket
+      this.disconnect();
+
+      // Get socket URL without relying on loadConfig
+      let socketUrl = "http://localhost:5000"; // Default fallback
+
+      // Try to load config if available, otherwise use the default
+      try {
+        // Use dynamic import to get config
+        const { loadConfig } = await import("./config");
+        const config = await loadConfig();
+        if (config && config.socketUrl) {
+          socketUrl = config.socketUrl;
+        }
+      } catch (configError) {
+        console.warn("Could not load config, using default URL:", socketUrl);
+      }
+
+      console.log("Using socket URL:", socketUrl);
+
+      // Try polling first, which works in almost all environments
+      const pollingSocket = io(`${socketUrl}/game`, {
+        transports: ["polling"],
+        reconnection: true,
+        timeout: 10000,
+        forceNew: true,
+      });
+
+      this.gameSocket = pollingSocket;
+
+      // Set up connection events
+      return new Promise((resolve, reject) => {
+        pollingSocket.on("connect", () => {
+          console.log("Connected using polling transport");
+          this.isConnected = true;
+
+          // Register and join game
+          if (userId) {
+            this.registerUser(userId);
+
+            if (gameId) {
+              pollingSocket.emit("joinGame", {
+                gameId,
+                userId,
+                username: username || userId,
+              });
+            }
+          }
+
+          resolve(true);
+        });
+
+        pollingSocket.on("connect_error", (error) => {
+          console.error("Polling connection error:", error);
+
+          // Try websocket as fallback
+          pollingSocket.disconnect();
+
+          console.log("Trying WebSocket transport as fallback...");
+          const websocketSocket = io(`${socketUrl}/game`, {
+            transports: ["websocket"],
+            reconnection: true,
+            timeout: 10000,
+            forceNew: true,
+          });
+
+          this.gameSocket = websocketSocket;
+
+          websocketSocket.on("connect", () => {
+            console.log("Connected using WebSocket transport");
+            this.isConnected = true;
+
+            // Register and join
+            if (userId) {
+              this.registerUser(userId);
+
+              if (gameId) {
+                websocketSocket.emit("joinGame", {
+                  gameId,
+                  userId,
+                  username: username || userId,
+                });
+              }
+            }
+
+            resolve(true);
+          });
+
+          websocketSocket.on("connect_error", (wsError) => {
+            console.error("WebSocket connection error:", wsError);
+            reject(
+              new Error("Failed to connect with both polling and WebSocket")
+            );
+          });
+        });
+
+        // Set timeout for the whole operation
+        setTimeout(() => {
+          reject(new Error("Connection attempt timed out after 15 seconds"));
+        }, 15000);
+      });
+    } catch (error) {
+      console.error("Force connection error:", error);
+      throw error;
+    }
+  }
 }
+
+export { io };
 
 // Create and export singleton instance
 export default new SocketService();

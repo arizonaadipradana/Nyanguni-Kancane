@@ -1115,8 +1115,67 @@ const gameLogic = {
     return options;
   },
 
+  /**
+   * Deduplicate players in game state before sending to clients
+   * @param {Object} sanitizedGame - The sanitized game state
+   * @returns {Object} - Deduplicated game state
+   */
+  deduplicatePlayers(sanitizedGame) {
+    if (
+      !sanitizedGame ||
+      !sanitizedGame.players ||
+      !Array.isArray(sanitizedGame.players)
+    ) {
+      return sanitizedGame;
+    }
+
+    // Track seen player IDs
+    const seenPlayers = new Set();
+    const uniquePlayers = [];
+
+    // Only keep the first occurrence of each player
+    for (const player of sanitizedGame.players) {
+      if (!player || !player.id) continue;
+
+      const playerId = player.id.toString();
+
+      if (!seenPlayers.has(playerId)) {
+        seenPlayers.add(playerId);
+        uniquePlayers.push(player);
+      } else {
+        console.log(
+          `Found duplicate player in game state: ${player.username} (${playerId})`
+        );
+      }
+    }
+
+    // If we found duplicates, update the game state
+    if (uniquePlayers.length < sanitizedGame.players.length) {
+      console.log(
+        `Deduplicated players: ${sanitizedGame.players.length} -> ${uniquePlayers.length}`
+      );
+
+      // Create a new sanitized game with unique players
+      return {
+        ...sanitizedGame,
+        players: uniquePlayers,
+      };
+    }
+
+    // No duplicates found
+    return sanitizedGame;
+  },
+
   // Get sanitized game state (for sending to clients)
   getSanitizedGameState(game) {
+    const originalGetSanitizedGameState = gameLogic.getSanitizedGameState;
+    gameLogic.getSanitizedGameState = function (game) {
+      // Call the original function
+      const sanitizedGame = originalGetSanitizedGameState(game);
+
+      // Deduplicate players
+      return gameLogic.deduplicatePlayers(sanitizedGame);
+    };
     return {
       id: game.gameId,
       status: game.status,

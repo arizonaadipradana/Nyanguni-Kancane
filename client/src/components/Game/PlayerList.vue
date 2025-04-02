@@ -6,16 +6,12 @@
       No players have joined yet
     </div>
 
-    <div 
-      v-for="player in players" 
-      :key="`player-${player.id}-${updateKey}`" 
-      class="player-spot" 
+    <div v-for="(player, index) in players" :key="`player-${player.id}-${index}-${updateKey}`" class="player-spot"
       :class="{
         'current-player': currentUser && player.id === currentUser.id,
         'active-turn': currentTurn && player.id === currentTurn,
         'folded': player.hasFolded
-      }"
-    >
+      }">
       <div class="player-info">
         <div class="player-name">{{ player.username || 'Unknown Player' }}</div>
         <div class="player-chips">
@@ -27,12 +23,14 @@
       </div>
 
       <div v-if="currentUser && player.id === currentUser.id" class="player-hand">
-        <div v-for="(card, index) in displayPlayerHand" :key="`card-${index}-${card.rank}-${card.suit}`" class="card-display player-card">
+        <div v-for="(card, cardIndex) in displayPlayerHand" :key="`card-${cardIndex}-${card.rank}-${card.suit}`"
+          class="card-display player-card">
           {{ formatCard(card) }}
         </div>
       </div>
       <div v-else class="player-hand">
-        <div v-for="i in (player.hasCards ? 2 : 0)" :key="`back-${i}-${updateKey}`" class="card-display card-back">
+        <div v-for="i in (player.hasCards ? 2 : 0)" :key="`back-${i}-${updateKey}-${index}`"
+          class="card-display card-back">
           ●●
         </div>
       </div>
@@ -43,7 +41,7 @@
 <script>
 export default {
   name: 'PlayerList',
-  
+
   props: {
     players: {
       type: Array,
@@ -73,16 +71,16 @@ export default {
       lastHandUpdate: Date.now()
     };
   },
-  
+
   computed: {
     playerDebugInfo() {
       if (!this.players) return 'No players';
-      
+
       // Log the first player for debugging
       const firstPlayer = this.players[0];
       return firstPlayer ? `First player: ${JSON.stringify(firstPlayer)}` : 'No first player';
     },
-    
+
     // Add a computed property to handle player hand display
     displayPlayerHand() {
       // This adds reactivity by creating new card objects
@@ -98,7 +96,7 @@ export default {
     playerHand: {
       handler(newHand) {
         if (newHand && newHand.length > 0) {
-          console.log('PlayerList detected hand change:', 
+          console.log('PlayerList detected hand change:',
             newHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
           this.updateKey++; // Increment to force re-render
           this.lastHandUpdate = Date.now();
@@ -107,24 +105,24 @@ export default {
       deep: true
     }
   },
-  
+
   mounted() {
     console.log('PlayerList mounted with players:', this.players);
     console.log('CurrentUser in PlayerList:', this.currentUser);
     console.log('Initial playerHand:', this.playerHand);
-    
+
     // Set up periodic checks for updates
     this.updateInterval = setInterval(() => {
       this.updateKey++; // Force re-render periodically
     }, 5000);
   },
-  
+
   beforeDestroy() {
     if (this.updateInterval) {
       clearInterval(this.updateInterval);
     }
   },
-  
+
   methods: {
     // Add a method to force update
     forceUpdate() {
@@ -226,7 +224,7 @@ export default {
     width: 140px;
     margin: 5px;
   }
-  
+
   .card-display {
     width: 40px;
     height: 60px;
