@@ -33,16 +33,18 @@
       <!-- Game table -->
       <div class="game-table">
         <!-- Community cards -->
-        <CommunityCards :communityCards="currentGame.communityCards" :formatCard="formatCard" />
+        <CommunityCards :communityCards="currentGame && currentGame.communityCards ? currentGame.communityCards : []"
+          :formatCard="formatCard" />
 
         <!-- Players -->
-        <PlayerList :players="currentGame.players" :currentUser="currentUser" :currentTurn="currentGame.currentTurn"
-          :playerHand="playerHand" :formatCard="formatCard" />
+        <PlayerList :players="currentGame && currentGame.players ? currentGame.players : []" :currentUser="currentUser"
+          :currentTurn="currentGame ? currentGame.currentTurn : null" :playerHand="playerHand"
+          :formatCard="formatCard" />
 
         <!-- Player actions -->
         <PlayerActions v-if="isYourTurn || shouldShowActions()" :availableActions="availableActions"
           :currentGame="currentGame" :betAmount="betAmount" :raiseAmount="raiseAmount"
-          :actionTimeLimit="actionTimeLimit" @updateBetAmount="betAmount = $event"
+          :actionTimeLimit="actionTimeLimit" :isYourTurn="isYourTurn" @updateBetAmount="betAmount = $event"
           @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction" @timeWarning="handleTimeWarning"
           @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
       </div>
@@ -134,8 +136,9 @@ export default {
       isYourTurn: false,
       showWinnerDisplay: false,
       currentHandResult: null,
-      actionTimeLimit: 60,
-      isReconnecting: false,
+      isReconnecting: false, // Add this missing property
+      availableActions: [],
+      cardRefreshInterval: null,
     };
   },
 
@@ -144,9 +147,24 @@ export default {
       'currentUser',
       'currentGame',
       'errorMessage',
-      'playerHand',
-      'availableActions'
     ]),
+
+    // Create a computed property with both getter and setter
+    playerHand: {
+      get() {
+        return this.$store.getters.playerHand || [];
+      },
+      set(newHand) {
+        // Use a proper mutation to update the hand
+        this.$store.commit('SET_PLAYER_HAND', newHand);
+      }
+    },
+
+    // Include availableActions from store or local data
+    availableActions() {
+      return this.$store.getters.availableActions || this.availableActions || [];
+    },
+
     isAuthenticated() {
       return !!this.$store.getters.token || !!localStorage.getItem('token');
     },
@@ -230,7 +248,7 @@ export default {
       // Update local state
       this.isYourTurn = true;
       this.availableActions = data.options || [];
-      this.actionTimeLimit = data.timeLimit || 60;  // Get the time limit from the server
+      this.actionTimeLimit = data.timeLimit || 60;
 
       // Update store state as well
       this.$store.commit('SET_YOUR_TURN', true);
@@ -250,6 +268,7 @@ export default {
     endTurn() {
       // Update local state
       this.isYourTurn = false;
+      this.availableActions = [];
 
       // Update store state
       this.$store.commit('SET_YOUR_TURN', false);
@@ -597,6 +616,11 @@ export default {
         return false;
       }
 
+      // Don't show actions if we're displaying the winner
+      if (this.showWinnerDisplay) {
+        return false;
+      }
+
       // Make sure we have a current user and valid turn data
       if (!this.currentUser || !this.currentGame.currentTurn) {
         return false;
@@ -657,8 +681,14 @@ export default {
       console.log("Forced game component update");
     },
     handleHandResult(result) {
+      console.log("Hand result received:", result);
       this.currentHandResult = result;
       this.showWinnerDisplay = true;
+
+      // Make sure we have all the data needed for display
+      if (!this.currentHandResult.communityCards && this.currentGame && this.currentGame.communityCards) {
+        this.currentHandResult.communityCards = this.currentGame.communityCards;
+      }
 
       // Add a message to the game log
       const winners = result.winners || [];
@@ -672,6 +702,10 @@ export default {
 
     closeWinnerDisplay() {
       this.showWinnerDisplay = false;
+
+      // Force a game state update after closing the winner display
+      // This ensures chip balances are synchronized
+      this.requestStateUpdate();
     },
 
     handleTimeWarning() {
@@ -875,7 +909,34 @@ export default {
           error
         };
       }
-    }
+    },
+
+    receiveCards(data) {
+      if (!data || !data.hand) return;
+
+      console.log('Received new cards:', data.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+
+      // Use store dispatch to avoid reactivity issues
+      this.$store.dispatch('forceUpdatePlayerHand', data.hand);
+
+      // Also update our local reactive state
+      this.playerHand = data.hand;
+    },
+
+    handleNewHand(gameState) {
+      this.addToLog("Starting a new hand");
+      this.updateGameState(gameState);
+
+      // Make sure to hide winner display if it's still showing
+      this.showWinnerDisplay = false;
+
+      // Reset any current player turn state
+      this.isYourTurn = false;
+      this.availableActions = [];
+
+      // Force UI update
+      this.$forceUpdate();
+    },
   },
 
   created() {
@@ -980,6 +1041,13 @@ export default {
 
     // Clear error message
     this.clearErrorMessage();
+
+    this.currentHandResult = {
+      winners: [],
+      hands: [],
+      pot: 0,
+      communityCards: []
+    };
   }
 };
 </script>

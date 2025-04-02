@@ -495,11 +495,16 @@ class SocketService {
       return;
     }
 
+    // Add a unique ID to each message to prevent duplicates
+    const messageId =
+      Date.now() + "-" + Math.random().toString(36).substr(2, 9);
+
     this.gameSocket.emit("sendMessage", {
       gameId,
       userId,
       username,
       message,
+      messageId, // Add this to help identify duplicates
     });
   }
 
@@ -508,6 +513,9 @@ class SocketService {
    */
   setupGameListeners() {
     if (!this.gameSocket) return;
+
+    // Track message IDs to prevent duplicates
+    const processedMessageIds = new Set();
 
     // Define events to listen for
     const events = [
@@ -537,6 +545,25 @@ class SocketService {
 
       // Add new listener that will emit to our own events system
       this.gameSocket.on(event, (data) => {
+        // Special handling for chat messages to prevent duplicates
+        if (event === "chatMessage" && data.messageId) {
+          if (processedMessageIds.has(data.messageId)) {
+            console.log(
+              "Duplicate chat message detected, ignoring:",
+              data.messageId
+            );
+            return;
+          }
+
+          // Add to processed set and limit its size
+          processedMessageIds.add(data.messageId);
+          if (processedMessageIds.size > 100) {
+            // Keep the set from growing too large by removing oldest entries
+            const iterator = processedMessageIds.values();
+            processedMessageIds.delete(iterator.next().value);
+          }
+        }
+
         this.emit(event, data);
       });
     });

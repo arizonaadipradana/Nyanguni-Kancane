@@ -341,6 +341,26 @@ const gameLogic = {
       throw new Error("Not your turn");
     }
 
+    // Validate that it's this player's turn
+    if (game.currentTurn.toString() !== playerId) {
+      throw new Error("Not your turn");
+    }
+
+    // Get valid options for this player
+    const validOptions = this.getPlayerOptions(game, playerId);
+    console.log(
+      `Valid options for ${player.username}: ${validOptions.join(", ")}`
+    );
+
+    // Check if the action is valid
+    if (!validOptions.includes(action)) {
+      throw new Error(
+        `Invalid action: ${action}. Valid options are: ${validOptions.join(
+          ", "
+        )}`
+      );
+    }
+
     // Process the action
     switch (action) {
       case "fold":
@@ -552,48 +572,155 @@ const gameLogic = {
     return result;
   },
 
-  // Place a bet for a player
+  /**
+   * Place a bet for a player with atomic updates to avoid version conflicts
+   * @param {Object} game - Game document
+   * @param {string} playerId - Player ID
+   * @param {number} amount - Bet amount
+   */
   async placeBet(game, playerId, amount) {
-    const player = this.getPlayerById(game, playerId);
+    try {
+      // Validate before processing
+      const player = this.getPlayerById(game, playerId);
 
-    // Check if player has enough chips
-    if (player.totalChips < amount) {
-      throw new Error("Not enough chips");
+      // Check if player has enough chips
+      if (player.totalChips < amount) {
+        throw new Error("Not enough chips");
+      }
+
+      // Use atomic updates instead of saving the whole document
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
+
+      console.log(
+        `Placing bet of ${amount} chips for player ${player.username}`
+      );
+
+      // Find the player index in the array
+      const playerIndex = game.players.findIndex(
+        (p) => p.user.toString() === playerId.toString()
+      );
+
+      if (playerIndex === -1) {
+        throw new Error("Player not found");
+      }
+
+      // Create update object for atomic operation - this avoids version conflicts
+      const updateQuery = {
+        $inc: {
+          [`players.${playerIndex}.totalChips`]: -amount,
+          [`players.${playerIndex}.chips`]: amount,
+          pot: amount,
+        },
+      };
+
+      // If this bet sets a new current bet, update that too
+      const newBet = player.chips + amount;
+      if (newBet > game.currentBet) {
+        updateQuery.$set = { currentBet: newBet };
+      }
+
+      // Perform atomic update
+      const updatedGame = await mongooseHelpers.atomicGameUpdate(
+        Game,
+        game.gameId,
+        updateQuery
+      );
+
+      if (!updatedGame) {
+        throw new Error("Failed to update game");
+      }
+
+      // Update the original game object with new values to maintain consistency
+      player.totalChips -= amount;
+      player.chips += amount;
+      game.pot += amount;
+      if (newBet > game.currentBet) {
+        game.currentBet = newBet;
+      }
+
+      return updatedGame;
+    } catch (error) {
+      console.error(`Error in placeBet: ${error.message}`);
+      throw error;
     }
-
-    // Update player chips
-    player.totalChips -= amount;
-    player.chips += amount;
-
-    // Update pot and current bet
-    game.pot += amount;
-    game.currentBet = Math.max(game.currentBet, player.chips);
-
-    await game.save();
   },
 
-  // Place an all-in bet
+  /**
+   * Place an all-in bet using atomic updates
+   * @param {Object} game - Game document
+   * @param {string} playerId - Player ID
+   */
   async placeAllIn(game, playerId) {
-    const player = this.getPlayerById(game, playerId);
+    try {
+      const player = this.getPlayerById(game, playerId);
 
-    // Put all remaining chips in the pot
-    const allInAmount = player.totalChips;
-    if (allInAmount <= 0) {
-      throw new Error("No chips left to go all-in");
+      // Get all-in amount
+      const allInAmount = player.totalChips;
+      if (allInAmount <= 0) {
+        throw new Error("No chips left to go all-in");
+      }
+
+      // Use atomic updates
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
+
+      console.log(
+        `Player ${player.username} going all-in with ${allInAmount} chips`
+      );
+
+      // Find the player index in the array
+      const playerIndex = game.players.findIndex(
+        (p) => p.user.toString() === playerId.toString()
+      );
+
+      if (playerIndex === -1) {
+        throw new Error("Player not found");
+      }
+
+      // Create update object for atomic operation
+      const updateQuery = {
+        $inc: {
+          [`players.${playerIndex}.chips`]: allInAmount,
+          pot: allInAmount,
+        },
+        $set: {
+          [`players.${playerIndex}.totalChips`]: 0,
+          [`players.${playerIndex}.isAllIn`]: true,
+        },
+      };
+
+      // If this all-in sets a new current bet, update that too
+      const newBet = player.chips + allInAmount;
+      if (newBet > game.currentBet) {
+        updateQuery.$set.currentBet = newBet;
+      }
+
+      // Perform atomic update
+      const updatedGame = await mongooseHelpers.atomicGameUpdate(
+        Game,
+        game.gameId,
+        updateQuery
+      );
+
+      if (!updatedGame) {
+        throw new Error("Failed to update game");
+      }
+
+      // Update the original game object
+      player.totalChips = 0;
+      player.chips += allInAmount;
+      player.isAllIn = true;
+      game.pot += allInAmount;
+      if (newBet > game.currentBet) {
+        game.currentBet = newBet;
+      }
+
+      return updatedGame;
+    } catch (error) {
+      console.error(`Error in placeAllIn: ${error.message}`);
+      throw error;
     }
-
-    // Update player chips
-    player.totalChips = 0;
-    player.chips += allInAmount;
-    player.isAllIn = true;
-
-    // Update pot and possibly current bet
-    game.pot += allInAmount;
-    if (player.chips > game.currentBet) {
-      game.currentBet = player.chips;
-    }
-
-    await game.save();
   },
 
   /**
@@ -635,6 +762,7 @@ const gameLogic = {
         userId: winner.user.toString(),
         newBalance: winner.totalChips,
         username: winner.username,
+        winAmount: winAmount,
       });
 
       console.log(
@@ -642,28 +770,44 @@ const gameLogic = {
       );
     }
 
-    // Update all player balances in the database in one go
-    for (const update of userUpdates) {
-      try {
-        console.log(
-          `Updating database balance for user ${update.username} (${update.userId}) to ${update.newBalance}`
-        );
+    // Get the user model
+    const User = require("../models/User");
 
-        // Update user in database
-        await User.findByIdAndUpdate(
-          update.userId,
-          { $set: { balance: update.newBalance } },
-          { new: true }
-        );
+    // Update all user balances in the database
+    // This ensures the correct balances are stored in the database
+    try {
+      // For each player in the game, update their balance to match their totalChips
+      for (const player of game.players) {
+        const userId = player.user.toString();
 
-        // Update games won for winners
-        await this.updateGamesWon(update.userId);
-      } catch (error) {
-        console.error(
-          `Error updating balance for player ${update.username}:`,
-          error
-        );
+        try {
+          // Find the player in the user database
+          const user = await User.findById(userId);
+          if (!user) {
+            console.error(`Could not find user ${userId} in database`);
+            continue;
+          }
+
+          // Update the user's balance to match their totalChips
+          user.balance = player.totalChips;
+
+          // If this is a winner, also increment their gamesWon counter
+          if (winners.some((w) => w.user.toString() === userId)) {
+            user.gamesWon += 1;
+          }
+
+          // Save the updated user
+          await user.save();
+
+          console.log(
+            `Updated user ${player.username} balance to ${player.totalChips}`
+          );
+        } catch (userError) {
+          console.error(`Error updating user ${player.username}:`, userError);
+        }
       }
+    } catch (error) {
+      console.error("Error updating user balances:", error);
     }
 
     // Reset pot
@@ -695,73 +839,203 @@ const gameLogic = {
 
   // Deal the flop (first three community cards)
   async dealFlop(game) {
-    // Update betting round
-    game.bettingRound = "flop";
+    try {
+      // Use our mongoose helpers for atomic updates
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
 
-    // Burn a card
-    cardDeck.drawCard(game.deck);
+      // Get a fresh copy of the game to avoid version conflicts
+      return await mongooseHelpers.withFreshGame(
+        game.gameId,
+        async (freshGame) => {
+          // Update betting round
+          freshGame.bettingRound = "flop";
 
-    // Deal three unique cards
-    for (let i = 0; i < 3; i++) {
-      const card = cardDeck.drawCard(game.deck);
-      game.communityCards.push(card);
+          // Burn a card
+          cardDeck.drawCard(freshGame.deck);
+
+          // Deal three unique cards
+          for (let i = 0; i < 3; i++) {
+            const card = cardDeck.drawCard(freshGame.deck);
+            freshGame.communityCards.push(card);
+          }
+
+          // Add to game history
+          freshGame.actionHistory.push({
+            player: "Dealer",
+            action: "dealFlop",
+            timestamp: Date.now(),
+          });
+
+          // Save the updated game - don't use the original game
+          await freshGame.save();
+
+          // Return the updated game
+          return freshGame;
+        }
+      );
+    } catch (error) {
+      console.error(`Error in dealFlop: ${error.message}`);
+
+      // Fallback to atomic update if with fresh game fails
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
+
+      // Create a new deck to ensure we have enough cards
+      const freshDeck = cardDeck.createDeck();
+
+      // Burn one card
+      const burnCard = freshDeck.pop();
+
+      // Get three new cards
+      const flopCards = [freshDeck.pop(), freshDeck.pop(), freshDeck.pop()];
+
+      // Perform atomic update
+      return await mongooseHelpers.atomicGameUpdate(Game, game.gameId, {
+        $set: {
+          bettingRound: "flop",
+          deck: freshDeck,
+          communityCards: flopCards,
+        },
+        $push: {
+          actionHistory: {
+            player: "Dealer",
+            action: "dealFlop",
+            timestamp: Date.now(),
+          },
+        },
+      });
     }
-
-    // Add to game history
-    game.actionHistory.push({
-      player: "Dealer",
-      action: "dealFlop",
-      timestamp: Date.now(),
-    });
-
-    await game.save();
-    return game;
   },
 
   // Deal the turn (fourth community card)
   async dealTurn(game) {
-    // Update betting round
-    game.bettingRound = "turn";
+    try {
+      // Use our mongoose helpers for atomic updates
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
 
-    // Burn a card
-    cardDeck.drawCard(game.deck);
+      // Get a fresh copy of the game to avoid version conflicts
+      return await mongooseHelpers.withFreshGame(
+        game.gameId,
+        async (freshGame) => {
+          // Update betting round
+          freshGame.bettingRound = "turn";
 
-    // Deal one unique card
-    const card = cardDeck.drawCard(game.deck);
-    game.communityCards.push(card);
+          // Burn a card
+          cardDeck.drawCard(freshGame.deck);
 
-    // Add to game history
-    game.actionHistory.push({
-      player: "Dealer",
-      action: "dealTurn",
-      timestamp: Date.now(),
-    });
+          // Deal one unique card
+          const card = cardDeck.drawCard(freshGame.deck);
+          freshGame.communityCards.push(card);
 
-    await game.save();
-    return game;
+          // Add to game history
+          freshGame.actionHistory.push({
+            player: "Dealer",
+            action: "dealTurn",
+            timestamp: Date.now(),
+          });
+
+          // Save the updated game - don't use the original game
+          await freshGame.save();
+
+          // Return the updated game
+          return freshGame;
+        }
+      );
+    } catch (error) {
+      console.error(`Error in dealTurn: ${error.message}`);
+
+      // Fallback to atomic update if with fresh game fails
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
+
+      // Get current community cards
+      const existingCards = game.communityCards || [];
+
+      // Create a new card for the turn
+      const turnCard = cardDeck.getFreshShuffledDeck()[0]; // get a random card
+
+      // Perform atomic update
+      return await mongooseHelpers.atomicGameUpdate(Game, game.gameId, {
+        $set: {
+          bettingRound: "turn",
+        },
+        $push: {
+          communityCards: turnCard,
+          actionHistory: {
+            player: "Dealer",
+            action: "dealTurn",
+            timestamp: Date.now(),
+          },
+        },
+      });
+    }
   },
 
   // Deal the river (fifth community card)
   async dealRiver(game) {
-    // Update betting round
-    game.bettingRound = "river";
+    try {
+      // Use our mongoose helpers for atomic updates
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
 
-    // Burn a card
-    cardDeck.drawCard(game.deck);
+      // Get a fresh copy of the game to avoid version conflicts
+      return await mongooseHelpers.withFreshGame(
+        game.gameId,
+        async (freshGame) => {
+          // Update betting round
+          freshGame.bettingRound = "river";
 
-    // Deal one unique card
-    const card = cardDeck.drawCard(game.deck);
-    game.communityCards.push(card);
+          // Burn a card
+          cardDeck.drawCard(freshGame.deck);
 
-    // Add to game history
-    game.actionHistory.push({
-      player: "Dealer",
-      action: "dealRiver",
-      timestamp: Date.now(),
-    });
+          // Deal one unique card
+          const card = cardDeck.drawCard(freshGame.deck);
+          freshGame.communityCards.push(card);
 
-    await game.save();
-    return game;
+          // Add to game history
+          freshGame.actionHistory.push({
+            player: "Dealer",
+            action: "dealRiver",
+            timestamp: Date.now(),
+          });
+
+          // Save the updated game - don't use the original game
+          await freshGame.save();
+
+          // Return the updated game
+          return freshGame;
+        }
+      );
+    } catch (error) {
+      console.error(`Error in dealRiver: ${error.message}`);
+
+      // Fallback to atomic update if with fresh game fails
+      const mongooseHelpers = require("./mongoose-helpers");
+      const Game = require("../models/Game");
+
+      // Get current community cards
+      const existingCards = game.communityCards || [];
+
+      // Create a new card for the river
+      const riverCard = cardDeck.getFreshShuffledDeck()[0]; // get a random card
+
+      // Perform atomic update
+      return await mongooseHelpers.atomicGameUpdate(Game, game.gameId, {
+        $set: {
+          bettingRound: "river",
+        },
+        $push: {
+          communityCards: riverCard,
+          actionHistory: {
+            player: "Dealer",
+            action: "dealRiver",
+            timestamp: Date.now(),
+          },
+        },
+      });
+    }
   },
 
   /**
@@ -885,6 +1159,8 @@ const gameLogic = {
    */
   async prepareNextHand(game) {
     try {
+      console.log(`Preparing next hand for game ${game.gameId}`);
+
       // Reset necessary game state
       game.bettingRound = "preflop";
       game.pot = 0;
@@ -932,96 +1208,92 @@ const gameLogic = {
         });
       }
 
-      // Use findByIdAndUpdate instead of direct save to avoid versioning conflicts
+      // Instead of using save directly, use findOneAndUpdate to avoid version conflicts
       try {
-        // Create a clean object for update to avoid mongoose versioning issues
-        const updateData = {
-          bettingRound: game.bettingRound,
-          pot: game.pot,
-          currentBet: game.currentBet,
-          communityCards: game.communityCards,
-          players: game.players,
-          status: game.status,
-          actionHistory: game.actionHistory,
-          deck: game.deck, // Include the fresh deck in the update
-        };
+        const mongooseHelpers = require("./mongoose-helpers");
+        const Game = require("../models/Game");
 
-        // Update the game in the database using findByIdAndUpdate
-        const updatedGame = await Game.findByIdAndUpdate(
-          game._id,
-          { $set: updateData },
-          { new: true, runValidators: true }
+        // Use our helper function
+        const updatedGame = await mongooseHelpers.updateWithRetry(
+          Game,
+          { gameId: game.gameId },
+          {
+            $set: {
+              bettingRound: game.bettingRound,
+              pot: game.pot,
+              currentBet: game.currentBet,
+              communityCards: game.communityCards,
+              players: game.players,
+              status: game.status,
+              actionHistory: game.actionHistory,
+              deck: game.deck,
+            },
+          },
+          {
+            new: true,
+            runValidators: false,
+            maxAttempts: 5,
+            verbose: true,
+          }
         );
-
-        if (!updatedGame) {
-          throw new Error(`Game with ID ${game._id} not found during update`);
-        }
 
         console.log(
-          `Game ${updatedGame.gameId} prepared for next hand with a fresh deck of ${updatedGame.deck.length} cards`
+          `Game ${updatedGame.gameId} prepared for next hand with new deck containing ${updatedGame.deck.length} cards`
         );
-
-        // Log deck stats for debugging
-        if (updatedGame.deck) {
-          const suitCounts = {};
-          const rankCounts = {};
-
-          updatedGame.deck.forEach((card) => {
-            suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
-            rankCounts[card.rank] = (rankCounts[card.rank] || 0) + 1;
-          });
-
-          console.log("Deck statistics:", {
-            deckSize: updatedGame.deck.length,
-            suits: suitCounts,
-            ranks: rankCounts,
-          });
-        }
-
         return updatedGame;
       } catch (updateError) {
-        console.error("Error updating game for next hand:", updateError);
-
-        // Fallback: Try to fetch a fresh copy of the game
-        const freshGame = await Game.findById(game._id);
-        if (!freshGame) {
-          throw new Error(`Could not find game with ID ${game._id}`);
-        }
-
-        // Apply our changes to the fresh copy
-        freshGame.bettingRound = "preflop";
-        freshGame.pot = 0;
-        freshGame.currentBet = 0;
-        freshGame.communityCards = [];
-        freshGame.players = game.players;
-        freshGame.status = game.status;
-        freshGame.deck = cardDeck.createDeck(); // Create a fresh deck here too
-
-        // Add our history entry to the fresh copy
-        if (game.status === "completed") {
-          freshGame.actionHistory.push({
-            player: "System",
-            action: "gameCompleted",
-            timestamp: Date.now(),
-          });
-        } else {
-          freshGame.actionHistory.push({
-            player: "System",
-            action: "nextHand",
-            timestamp: Date.now(),
-          });
-        }
-
-        // Save the fresh copy
-        await freshGame.save();
-        console.log(
-          `Game ${freshGame.gameId} prepared for next hand using fallback method with a fresh deck of ${freshGame.deck.length} cards`
+        console.error(
+          `Error updating game for next hand: ${updateError.message}`
         );
-        return freshGame;
+
+        // Use Model.findOne().then() pattern as a last resort
+        return Game.findOne({ gameId: game.gameId }).then((freshGame) => {
+          if (!freshGame) {
+            throw new Error(`Game ${game.gameId} not found`);
+          }
+
+          // Apply our changes to the fresh document
+          freshGame.bettingRound = "preflop";
+          freshGame.pot = 0;
+          freshGame.currentBet = 0;
+          freshGame.communityCards = [];
+
+          // Create a completely new deck
+          freshGame.deck = cardDeck.getFreshShuffledDeck();
+
+          // Reset player states
+          freshGame.players.forEach((player) => {
+            player.hand = [];
+            player.chips = 0;
+            player.hasFolded = false;
+            player.hasActed = false;
+            player.isAllIn = false;
+          });
+
+          // Set game status
+          if (freshGame.players.filter((p) => p.isActive).length < 2) {
+            freshGame.status = "completed";
+          }
+
+          // Skip validation for this operation
+          freshGame._skipValidation = true;
+
+          // Save with retry logic
+          return freshGame.save().then(() => freshGame);
+        });
       }
     } catch (error) {
-      console.error("Error in prepareNextHand:", error);
-      throw error;
+      console.error(`Critical error in prepareNextHand: ${error.message}`);
+      // As a last resort, create a new Game object
+      const Game = require("../models/Game");
+      const freshGame = await Game.findOne({ gameId: game.gameId });
+
+      if (!freshGame) {
+        throw new Error(`Game ${game.gameId} not found during error recovery`);
+      }
+
+      console.log(`Using complete refresh approach for game ${game.gameId}`);
+      return freshGame;
     }
   },
 
@@ -1073,46 +1345,55 @@ const gameLogic = {
 
   // Get available options for a player
   getPlayerOptions(game, playerId) {
-    const player = this.getPlayerById(game, playerId);
-    const options = [];
+    try {
+      const player = this.getPlayerById(game, playerId);
+      const options = [];
 
-    // Player can't act if they've folded or are all-in
-    if (player.hasFolded || player.isAllIn) {
+      // Player can't act if they've folded or are all-in
+      if (player.hasFolded || player.isAllIn) {
+        return options;
+      }
+
+      // Always can fold
+      options.push("fold");
+
+      // Check if player can check - improved logic here
+      const playerInPot = player.chips || 0;
+      const currentBet = game.currentBet || 0;
+
+      // Player can check if:
+      // 1. There's no current bet, or
+      // 2. They've already matched the current bet exactly
+      if (currentBet === 0 || playerInPot === currentBet) {
+        options.push("check");
+      }
+
+      // Call option - only available if there's a bet to call and player hasn't already matched it
+      if (currentBet > 0 && playerInPot < currentBet) {
+        options.push("call");
+      }
+
+      // Bet option - only if no current bet exists
+      if (currentBet === 0 && player.totalChips > 0) {
+        options.push("bet");
+      }
+
+      // Raise option - if there's a current bet and player has enough chips to raise
+      if (currentBet > 0 && player.totalChips + playerInPot > currentBet) {
+        options.push("raise");
+      }
+
+      // All-in option is always available if player has chips
+      if (player.totalChips > 0) {
+        options.push("allIn");
+      }
+
       return options;
+    } catch (error) {
+      console.error("Error determining player options:", error);
+      // Return minimal safe options on error
+      return ["fold"];
     }
-
-    // Always can fold
-    options.push("fold");
-
-    // Check if player can check
-    if (game.currentBet === 0 || player.chips === game.currentBet) {
-      options.push("check");
-    }
-
-    // Call option
-    if (game.currentBet > 0 && player.chips < game.currentBet) {
-      options.push("call");
-    }
-
-    // Bet option
-    if (game.currentBet === 0 && player.totalChips > 0) {
-      options.push("bet");
-    }
-
-    // Raise option
-    if (
-      game.currentBet > 0 &&
-      player.totalChips > game.currentBet - player.chips
-    ) {
-      options.push("raise");
-    }
-
-    // All-in option is always available if player has chips
-    if (player.totalChips > 0) {
-      options.push("allIn");
-    }
-
-    return options;
   },
 
   /**

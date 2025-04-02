@@ -11,10 +11,8 @@ export default {
    */
   createHandlers(component) {
     return {
-      // client/src/components/Game/GameHandlers.js - Fixed turn handling
-
       /**
-       * Handle game state update event with real-time UI updates
+       * Handle game state update event with real-time UI updates and array validation
        * @param {Object} gameState - New game state
        */
       handleGameUpdate(gameState) {
@@ -29,14 +27,30 @@ export default {
           bettingRound: gameState.bettingRound,
         });
 
-        // Make sure important fields are present
+        // Make sure important fields are present and valid
         const enhancedGameState = { ...gameState };
+
+        // Ensure players is always a valid array
+        if (
+          !enhancedGameState.players ||
+          !Array.isArray(enhancedGameState.players)
+        ) {
+          enhancedGameState.players = [];
+        }
+
+        // Ensure communityCards is always a valid array
+        if (
+          !enhancedGameState.communityCards ||
+          !Array.isArray(enhancedGameState.communityCards)
+        ) {
+          enhancedGameState.communityCards = [];
+        }
 
         // Force status to 'active' if players have cards but status doesn't reflect it
         if (
-          gameState.players &&
-          gameState.players.some((p) => p.hasCards) &&
-          gameState.status !== "active"
+          enhancedGameState.players &&
+          enhancedGameState.players.some((p) => p.hasCards) &&
+          enhancedGameState.status !== "active"
         ) {
           console.log(
             "Players have cards but game status is not active; forcing to active"
@@ -46,55 +60,55 @@ export default {
 
         // Add creator info if it's missing but we previously had it
         if (
-          !gameState.creator &&
-          component.currentGame &&
-          component.currentGame.creator
+          !enhancedGameState.creator &&
+          this.currentGame &&
+          this.currentGame.creator
         ) {
           console.log("Preserving creator info that was missing in update");
-          enhancedGameState.creator = component.currentGame.creator;
+          enhancedGameState.creator = this.currentGame.creator;
         }
 
         // IMPORTANT: Check if it's no longer the current user's turn - if so, clear turn state
         if (
-          component.isYourTurn &&
-          component.currentUser &&
-          gameState.currentTurn &&
-          gameState.currentTurn !== component.currentUser.id
+          this.isYourTurn &&
+          this.currentUser &&
+          enhancedGameState.currentTurn &&
+          enhancedGameState.currentTurn !== this.currentUser.id
         ) {
           console.log(
             "Game state indicates it is no longer your turn, updating UI"
           );
-          component.endTurn();
+          this.endTurn();
         }
 
         // Update the game state in store
-        component.updateGameState(enhancedGameState);
+        this.updateGameState(enhancedGameState);
 
         // If this update includes turn info and it's the current user's turn,
         // make sure the isYourTurn flag is set
         if (
-          component.currentUser &&
-          gameState.currentTurn &&
-          gameState.currentTurn === component.currentUser.id &&
-          !component.isYourTurn
+          this.currentUser &&
+          enhancedGameState.currentTurn &&
+          enhancedGameState.currentTurn === this.currentUser.id &&
+          !this.isYourTurn
         ) {
           console.log(
             "Game state shows it is your turn, updating isYourTurn flag"
           );
-          component.yourTurn({
-            options: component.getDefaultOptions
-              ? component.getDefaultOptions()
+          this.yourTurn({
+            options: this.getDefaultOptions
+              ? this.getDefaultOptions()
               : ["fold", "check", "call", "bet", "raise"],
           });
         }
 
         // Clear any error message once we successfully receive game state
-        component.SET_ERROR_MESSAGE("");
+        this.SET_ERROR_MESSAGE("");
 
         // Log connection status
-        if (!component.isConnected) {
-          component.isConnected = true;
-          component.addToLog("Connected to game server");
+        if (!this.isConnected) {
+          this.isConnected = true;
+          this.addToLog("Connected to game server");
         }
       },
 
@@ -164,47 +178,55 @@ export default {
       },
 
       /**
-       * Handle cards being dealt with improved update
+       * Handle cards being dealt with improved update and array validation
        * @param {Object} data - Card data
        */
       handleDealCards(data) {
         console.log("Received cards:", data);
 
+        // Validate that data.hand is a valid array
+        if (!data || !data.hand || !Array.isArray(data.hand)) {
+          console.error("Invalid hand data received:", data);
+          this.addToLog("Error receiving cards - invalid data");
+          return;
+        }
+
         // Force clear any existing cards first to ensure update
-        component.playerHand = [];
+        this.playerHand = [];
 
         // Small delay to ensure state reset before setting new cards
         setTimeout(() => {
-          // Apply the new cards
-          component.receiveCards(data);
-          component.addToLog("You have been dealt new cards");
+          try {
+            // Apply the new cards
+            this.receiveCards(data);
+            this.addToLog("You have been dealt new cards");
 
-          // Force UI update
-          component.$forceUpdate();
+            // Force UI update
+            this.$forceUpdate();
 
-          // Mark game as initialized when we get cards
-          component.gameInitialized = true;
-          component.gameInProgress = true;
+            // Mark game as initialized when we get cards
+            this.gameInitialized = true;
+            this.gameInProgress = true;
 
-          // Force the currentGame status to be 'active' if it's not already
-          if (
-            component.currentGame &&
-            component.currentGame.status !== "active"
-          ) {
-            component.$set(component.currentGame, "status", "active");
-            component.addToLog("Game status updated to active");
+            // Force the currentGame status to be 'active' if it's not already
+            if (this.currentGame && this.currentGame.status !== "active") {
+              this.$set(this.currentGame, "status", "active");
+              this.addToLog("Game status updated to active");
+            }
+
+            // Clear any lingering error messages
+            this.clearErrorMessage();
+
+            // Request a full game state update to ensure UI is in sync
+            setTimeout(() => {
+              this.requestStateUpdate();
+            }, 500);
+          } catch (error) {
+            console.error("Error handling dealt cards:", error);
+            this.addToLog("Error processing received cards");
           }
-
-          // Clear any lingering error messages
-          component.clearErrorMessage();
-
-          // Request a full game state update to ensure UI is in sync
-          setTimeout(() => {
-            component.requestStateUpdate();
-          }, 500);
         }, 100);
       },
-
       /**
        * Handle your turn event with better lifecycle and validation
        * @param {Object} data - Turn data with available options
@@ -361,14 +383,42 @@ export default {
        * Handle hand result event
        * @param {Object} result - Hand result data
        */
+      /**
+       * Handle hand result event
+       * @param {Object} result - Hand result data
+       */
       handleHandResult(result) {
-        component.handResult = result;
-        component.showResult = true;
+        console.log("Hand result received:", result);
 
-        const winnerNames = result.winners
-          .map((winner) => winner.username)
-          .join(", ");
-        component.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
+        // Update UI state first - must be done before adding log to ensure it's displayed
+        this.handResult = result;
+        this.showResult = true;
+        this.currentHandResult = result;
+        this.showWinnerDisplay = true;
+
+        // Ensure we end any active turn when showing results
+        if (this.isYourTurn) {
+          this.endTurn();
+        }
+
+        // Make sure we have all the data needed for display
+        if (
+          !this.currentHandResult.communityCards &&
+          this.currentGame &&
+          this.currentGame.communityCards
+        ) {
+          this.currentHandResult.communityCards =
+            this.currentGame.communityCards;
+        }
+
+        // Add a message to the game log
+        const winners = result.winners || [];
+        if (winners.length > 0) {
+          const winnerNames = winners.map((w) => w.username).join(", ");
+          this.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
+        } else {
+          this.addToLog("Hand complete.");
+        }
       },
 
       /**

@@ -1,25 +1,26 @@
 // client/src/utils/gameUtils.js
-/**
- * Utility functions for the game functionality
- */
 
 /**
- * Format a card for display
+ * Format a card for display with improved null handling
  * @param {Object} card - Card object with suit and rank
  * @returns {String} Formatted card representation
  */
 export const formatCard = (card) => {
-    if (!card) return '?';
-  
-    const suitSymbols = {
-      hearts: '♥',
-      diamonds: '♦',
-      clubs: '♣',
-      spades: '♠'
-    };
-  
-    return `${card.rank}${suitSymbols[card.suit]}`;
+  // Handle null, undefined, or invalid cards
+  if (!card || !card.suit || !card.rank) return '?';
+
+  const suitSymbols = {
+    hearts: '♥',
+    diamonds: '♦',
+    clubs: '♣',
+    spades: '♠'
   };
+
+  // Use a default symbol if the suit is not recognized
+  const suitSymbol = suitSymbols[card.suit] || '?';
+  
+  return `${card.rank}${suitSymbol}`;
+};
   
   /**
    * Generate default player options

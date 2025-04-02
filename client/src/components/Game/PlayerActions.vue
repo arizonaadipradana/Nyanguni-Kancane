@@ -3,8 +3,13 @@
   <div class="player-actions">
     <h3>Your Turn</h3>
 
-    <TurnTimer v-if="isYourTurn" :isActive="isYourTurn" :initialTime="actionTimeLimit" @timeout="handleTimeout"
-      @warning="handleTimeWarning" ref="turnTimer" />
+    <TurnTimer 
+  ref="turnTimer"
+  :initialTime="actionTimeLimit" 
+  :isActive="isYourTurn" 
+  @warning="$emit('timeWarning')" 
+  @timeout="handleTimeout" 
+/>
 
     <div class="action-buttons">
       <button v-if="availableActions.includes('fold')" @click="$emit('handleAction', 'fold')" class="btn btn-danger">
@@ -64,27 +69,31 @@ export default {
   },
 
   props: {
-    availableActions: {
-      type: Array,
-      required: true
-    },
-    currentGame: {
-      type: Object,
-      required: true
-    },
-    betAmount: {
-      type: Number,
-      required: true
-    },
-    raiseAmount: {
-      type: Number,
-      required: true
-    },
-    actionTimeLimit: {
-      type: Number,
-      default: 60
-    },
+  availableActions: {
+    type: Array,
+    default: () => []
   },
+  currentGame: {
+    type: Object,
+    default: null
+  },
+  betAmount: {
+    type: Number,
+    default: 1
+  },
+  raiseAmount: {
+    type: Number,
+    default: 0
+  },
+  actionTimeLimit: {
+    type: Number,
+    default: 30
+  },
+  isYourTurn: {  // Add this prop
+    type: Boolean,
+    default: false
+  }
+},
 
   data() {
     return {
@@ -245,11 +254,8 @@ export default {
     },
 
     handleTimeout() {
-      // Auto-fold when time runs out
-      if (this.isYourTurn) {
-        this.$emit('handleAction', 'fold');
-        this.$emit('log', 'Time expired - auto folding');
-      }
+      // Automatically fold when time runs out
+  this.$emit('handleAction', 'fold');
     },
     handleTimeWarning() {
       // Emit a time warning event - parent component can display a notification

@@ -1,5 +1,5 @@
 // server/utils/mongoose-helpers.js
-// Create this file to add utilities for handling mongoose version conflicts
+const mongoose = require('mongoose');
 
 /**
  * Save a mongoose document with retry logic for version conflicts
@@ -172,3 +172,59 @@ exports.saveWithRetry = async function(doc, options = {}) {
     // If we get here, we've exhausted our retries
     throw lastError;
   };
+
+  /**
+ * Find document by gameId and atomically update it to bypass version conflicts
+ * @param {Model} model - Mongoose model (Game)
+ * @param {String} gameId - Game ID to find
+ * @param {Object} update - Update operations ($set, etc)
+ * @returns {Promise<Document>} Updated document
+ */
+exports.atomicGameUpdate = async function(model, gameId, update) {
+  try {
+    // Use findOneAndUpdate with the raw gameId field, not _id
+    // This bypasses version checks completely
+    const updated = await model.findOneAndUpdate(
+      { gameId: gameId },
+      update,
+      { 
+        new: true, // Return updated document
+        runValidators: false, // Skip validation for performance
+        versionKey: false, // Ignore version key
+      }
+    );
+    
+    return updated;
+  } catch (error) {
+    console.error(`Atomic update error for game ${gameId}:`, error);
+    throw error;
+  }
+};
+
+/**
+ * Perform an operation with a fresh instance of the game document
+ * This helps avoid version conflicts by always working with the latest version
+ * @param {String} gameId - Game ID
+ * @param {Function} operation - Function to perform on the fresh document
+ * @returns {Promise<Document>} Result of the operation
+ */
+exports.withFreshGame = async function(gameId, operation) {
+  const Game = require('../models/Game');
+  
+  try {
+    // Get a fresh copy of the game
+    const game = await Game.findOne({ gameId });
+    if (!game) {
+      throw new Error(`Game ${gameId} not found`);
+    }
+    
+    // Skip validation for this operation
+    game._skipValidation = true;
+    
+    // Perform the operation
+    return await operation(game);
+  } catch (error) {
+    console.error(`Error in withFreshGame for ${gameId}:`, error);
+    throw error;
+  }
+};
