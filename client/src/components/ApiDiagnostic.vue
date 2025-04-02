@@ -28,6 +28,9 @@
       <button @click="testConnection" :disabled="loading" class="test-button">
         Test Connection
       </button>
+      <button @click="testDirectConnection" :disabled="loading" class="test-button">
+        Test Direct Connection (Port 5000)
+      </button>
       <button @click="clearNgrok" :disabled="loading" class="test-button warning">
         Clear Ngrok URL
       </button>
@@ -138,6 +141,45 @@ export default {
       } finally {
         this.loading = false;
       }
+    },
+    
+    async testDirectConnection() {
+      this.loading = true;
+      this.errorMessage = '';
+      
+      try {
+        // Try to connect directly to port 5000
+        const directUrl = 'http://localhost:5000/api';
+        console.log('Testing direct connection to:', directUrl);
+        
+        const pingResponse = await axios.get(directUrl, {
+          timeout: 5000
+        });
+        
+        console.log('Direct API ping response:', pingResponse.data);
+        
+        if (pingResponse.status === 200) {
+          this.apiStatus = 'connected';
+          this.apiUrl = directUrl;
+          this.errorMessage = 'Direct connection successful! Try restarting your client app.';
+        } else {
+          this.apiStatus = 'failed';
+          this.errorMessage = `Direct connection - Unexpected status: ${pingResponse.status}`;
+        }
+      } catch (error) {
+        this.apiStatus = 'failed';
+        console.error('Direct connection test failed:', error);
+        
+        if (error.response) {
+          this.errorMessage = `Direct connection - Server responded: ${error.response.status}`;
+        } else if (error.request) {
+          this.errorMessage = 'Direct connection failed - No response received. Ensure server is running on port 5000.';
+        } else {
+          this.errorMessage = `Direct connection error: ${error.message}`;
+        }
+      } finally {
+        this.loading = false;
+      }
     }
   }
 };
@@ -189,6 +231,7 @@ h3 {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .test-button {

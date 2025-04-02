@@ -3,7 +3,7 @@ module.exports = {
     port: 8080,
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:5000', // Updated from 3000 to 5000
         ws: true,
         changeOrigin: true,
         timeout: 10000, // 10 second timeout
@@ -20,7 +20,7 @@ module.exports = {
         }
       },
       '/socket.io': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:5000', // Updated from 3000 to 5000
         ws: true,
         changeOrigin: true
       }

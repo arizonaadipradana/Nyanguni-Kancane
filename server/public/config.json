@@ -1,7 +1,7 @@
 {
-  "apiUrl": "http://localhost:3000",
-  "socketUrl": "http://localhost:3000",
+  "apiUrl": "http://localhost:5000",
+  "socketUrl": "http://localhost:5000",
   "env": "development",
   "version": "1.0.0",
-  "timestamp": "2025-04-01T18:26:51.027Z"
+  "timestamp": "2025-04-02T05:34:47.262Z"
 }

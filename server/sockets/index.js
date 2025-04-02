@@ -235,7 +235,7 @@ module.exports = (io) => {
       console.log(
         `Received startGame event for game ${gameId} from user ${userId}`
       );
-
+    
       try {
         // Find the game with lean() for better performance
         const game = await Game.findOne({ gameId });
@@ -243,11 +243,11 @@ module.exports = (io) => {
           console.log(`Game not found: ${gameId}`);
           return socket.emit("gameError", { message: "Game not found" });
         }
-
+    
         // Check if player is the creator
         const creatorId = game.creator.user.toString();
         const requestUserId = userId.toString();
-
+    
         if (creatorId !== requestUserId) {
           console.log(
             `User ${userId} is not the creator (${creatorId}) of game ${gameId}`
@@ -256,7 +256,7 @@ module.exports = (io) => {
             message: "Only the creator can start the game",
           });
         }
-
+    
         // Check if enough players
         if (game.players.length < 2) {
           console.log(
@@ -266,7 +266,7 @@ module.exports = (io) => {
             message: "Need at least 2 players to start",
           });
         }
-
+    
         // Check if game already started
         if (game.status !== "waiting") {
           console.log(
@@ -276,126 +276,163 @@ module.exports = (io) => {
             message: "Game has already been started",
           });
         }
-
+    
         console.log(
           `Starting game ${gameId} with ${game.players.length} players`
         );
-
+    
+        // IMPORTANT FIX: Create a completely fresh deck with enhanced shuffling
+        const cardDeck = require('../utils/cardDeck');
+        game.deck = cardDeck.getFreshShuffledDeck();
+        
+        // Log deck statistics to verify proper shuffling
+        const deckStats = cardDeck.getDeckStats(game.deck);
+        console.log(`New game deck statistics:`, deckStats);
+    
         // Update game status
         game.status = "active";
         game.bettingRound = "preflop";
         game.dealerPosition = 0; // First player is dealer for first hand
         await game.save();
-
+    
         // Send system message about game starting
         gameIo.to(gameId).emit("chatMessage", {
           type: "system",
           message: "The game has started",
           timestamp: new Date(),
         });
-
+    
         console.log(`Game ${gameId} status updated to active`);
-
-        // Initialize game with first hand
+    
+        // Initialize game with first hand - WRAPPED IN TRY/CATCH WITH BETTER ERROR HANDLING
         try {
-          // Use a try-catch specifically for the game initialization
+          // Start a new hand with our enhanced shuffled deck
+          const updatedGame = await gameLogic.startNewHand(game);
+          console.log(`First hand started for game ${gameId}`);
+    
+          // Log the cards dealt to each player for verification
+          updatedGame.players.forEach(player => {
+            if (player.hand && player.hand.length) {
+              console.log(`Player ${player.username} cards:`, player.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+            }
+          });
+    
+          // VALIDATION: Check for duplicate cards
           try {
-            const updatedGame = await gameLogic.startNewHand(game);
-            console.log(`First hand started for game ${gameId}`);
-
-            // Emit game state to all players
-            gameIo
-              .to(gameId)
-              .emit(
-                "gameStarted",
-                gameLogic.getSanitizedGameState(updatedGame)
+            gameLogic.validateGameCards(updatedGame);
+          } catch (validationError) {
+            console.error(`Card validation failed: ${validationError.message}`);
+            
+            // Try to fix the issue
+            const debugging = require('../utils/debugging');
+            try {
+              await debugging.fixDuplicateCards(updatedGame);
+              // Re-validate after fixing
+              gameLogic.validateGameCards(updatedGame);
+            } catch (fixError) {
+              socket.emit("gameError", {
+                message: "Card validation failed. Please restart the game.",
+                details: validationError.message,
+              });
+              return;
+            }
+          }
+    
+          // Emit game state to all players
+          gameIo
+            .to(gameId)
+            .emit(
+              "gameStarted",
+              gameLogic.getSanitizedGameState(updatedGame)
+            );
+          console.log(`Game started event emitted for game ${gameId}`);
+    
+          // Emit private cards to each player
+          for (const player of updatedGame.players) {
+            const socketId = userSockets.get(player.user.toString());
+            if (socketId) {
+              console.log(`Sending cards to player ${player.username}:`, player.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+              gameIo.to(socketId).emit("dealCards", {
+                hand: player.hand,
+              });
+            } else {
+              console.log(
+                `Could not find socket for player ${player.username}`
               );
-            console.log(`Game started event emitted for game ${gameId}`);
-
-            // Emit private cards to each player
-            for (const player of updatedGame.players) {
-              const socketId = userSockets.get(player.user.toString());
+            }
+          }
+    
+          // Start the first betting round
+          const gameWithBetting = await gameLogic.startBettingRound(
+            updatedGame
+          );
+    
+          // Notify the current player it's their turn
+          if (gameWithBetting.currentTurn) {
+            const currentPlayer = gameWithBetting.players.find(
+              (p) =>
+                p.user.toString() === gameWithBetting.currentTurn.toString()
+            );
+    
+            if (currentPlayer) {
+              const socketId = userSockets.get(currentPlayer.user.toString());
               if (socketId) {
-                gameIo.to(socketId).emit("dealCards", {
-                  hand: player.hand,
+                gameIo.to(socketId).emit("yourTurn", {
+                  options: gameLogic.getPlayerOptions(
+                    gameWithBetting,
+                    currentPlayer.user
+                  ),
+                  timeLimit: 30, // 30 seconds to make a decision
                 });
-                console.log(`Cards dealt to player ${player.username}`);
+    
+                // Let everyone know whose turn it is
+                gameIo.to(gameId).emit("turnChanged", {
+                  playerId: currentPlayer.user.toString(),
+                  username: currentPlayer.username,
+                });
+    
+                console.log(`It's ${currentPlayer.username}'s turn`);
               } else {
                 console.log(
-                  `Could not find socket for player ${player.username}`
+                  `Could not find socket for current player ${currentPlayer.username}`
                 );
               }
-            }
-
-            // Start the first betting round
-            const gameWithBetting = await gameLogic.startBettingRound(
-              updatedGame
-            );
-
-            // Notify the current player it's their turn
-            if (gameWithBetting.currentTurn) {
-              const currentPlayer = gameWithBetting.players.find(
-                (p) =>
-                  p.user.toString() === gameWithBetting.currentTurn.toString()
-              );
-
-              if (currentPlayer) {
-                const socketId = userSockets.get(currentPlayer.user.toString());
-                if (socketId) {
-                  gameIo.to(socketId).emit("yourTurn", {
-                    options: gameLogic.getPlayerOptions(
-                      gameWithBetting,
-                      currentPlayer.user
-                    ),
-                    timeLimit: 30, // 30 seconds to make a decision
-                  });
-
-                  // Let everyone know whose turn it is
-                  gameIo.to(gameId).emit("turnChanged", {
-                    playerId: currentPlayer.user.toString(),
-                    username: currentPlayer.username,
-                  });
-
-                  console.log(`It's ${currentPlayer.username}'s turn`);
-                } else {
-                  console.log(
-                    `Could not find socket for current player ${currentPlayer.username}`
-                  );
-                }
-              } else {
-                console.log(`Could not find current player in game ${gameId}`);
-              }
             } else {
-              console.log(`No current turn set for game ${gameId}`);
+              console.log(`Could not find current player in game ${gameId}`);
             }
-
-            // Update game state for all players
-            gameIo
-              .to(gameId)
-              .emit(
-                "gameUpdate",
-                gameLogic.getSanitizedGameState(gameWithBetting)
-              );
-            console.log(`Game state updated for all players in game ${gameId}`);
-          } catch (gameInitError) {
-            console.error(`Error initializing game: ${gameInitError.message}`);
-            console.error(gameInitError.stack);
-
-            // Even if initialization fails, don't revert game status
-            // Send error but also allow client to recover
+          } else {
+            console.log(`No current turn set for game ${gameId}`);
+          }
+    
+          // Update game state for all players
+          gameIo
+            .to(gameId)
+            .emit(
+              "gameUpdate",
+              gameLogic.getSanitizedGameState(gameWithBetting)
+            );
+          console.log(`Game state updated for all players in game ${gameId}`);
+        } catch (gameInitError) {
+          console.error(`Error initializing game: ${gameInitError.message}`);
+          console.error(gameInitError.stack);
+    
+          // Try to recover
+          try {
+            // Reset the game status
+            game.status = "waiting";
+            await game.save();
+            
+            // Notify clients about the error
             socket.emit("gameError", {
-              message:
-                "Game started but initialization had an error, try refreshing",
+              message: "Failed to initialize game. Please try again.",
               details: gameInitError.message,
             });
+          } catch (recoveryError) {
+            console.error(`Recovery error: ${recoveryError.message}`);
+            socket.emit("gameError", {
+              message: "Critical error starting game.",
+            });
           }
-        } catch (startHandError) {
-          console.error(`Error starting first hand: ${startHandError.message}`);
-          console.error(startHandError.stack);
-          socket.emit("gameError", {
-            message: "Error starting game",
-            details: startHandError.message,
-          });
         }
       } catch (error) {
         console.error(`Start game socket error for game ${gameId}:`, error);
@@ -465,74 +502,201 @@ module.exports = (io) => {
               message: result.message,
             });
 
-            // Prepare for next hand after a delay
+            // Prepare for next hand after a delay - UPDATED WITH IMPROVED IMPLEMENTATION
             setTimeout(async () => {
-              const nextHandGame = await gameLogic.prepareNextHand(game);
+              try {
+                // Use the safe operation wrapper for handling next hand preparation
+                const nextHandGame = await safeAsyncOperation(async () => {
+                  // First, get a fresh copy of the game to avoid version conflicts
+                  const freshGame = await Game.findOne({
+                    gameId: game.gameId,
+                  });
 
-              if (nextHandGame.status === "completed") {
-                // Game has ended
-                gameIo.to(gameId).emit("gameEnded", {
-                  message: "Game ended - not enough active players",
-                });
-              } else {
-                // Start next hand
-                const newHand = await gameLogic.startNewHand(nextHandGame);
-
-                // Emit new game state
-                gameIo
-                  .to(gameId)
-                  .emit("newHand", gameLogic.getSanitizedGameState(newHand));
-
-                // Emit private cards to each player
-                newHand.players.forEach((player) => {
-                  const socketId = userSockets.get(player.user.toString());
-                  if (socketId) {
-                    gameIo.to(socketId).emit("dealCards", {
-                      hand: player.hand,
-                    });
+                  if (!freshGame) {
+                    throw new Error(
+                      `Game ${game.gameId} not found when preparing next hand`
+                    );
                   }
-                });
 
-                // Start the betting round
-                const bettingGame = await gameLogic.startBettingRound(newHand);
-
-                // Notify the current player it's their turn
-                if (bettingGame.currentTurn) {
-                  const currentPlayer = bettingGame.players.find(
-                    (p) =>
-                      p.user.toString() === bettingGame.currentTurn.toString()
+                  // Create a fresh deck for the next hand - THIS IS KEY
+                  const cardDeck = require("../utils/cardDeck");
+                  freshGame.deck = cardDeck.createDeck();
+                  console.log(
+                    `Created fresh deck with ${freshGame.deck.length} cards for next hand`
                   );
 
-                  if (currentPlayer) {
-                    const socketId = userSockets.get(
-                      currentPlayer.user.toString()
-                    );
-                    if (socketId) {
-                      gameIo.to(socketId).emit("yourTurn", {
-                        options: gameLogic.getPlayerOptions(
-                          bettingGame,
-                          currentPlayer.user
-                        ),
-                        timeLimit: 30,
-                      });
+                  // Use our utility from gameLogic but with the fresh game object
+                  return await gameLogic.prepareNextHand(freshGame);
+                });
 
-                      gameIo.to(gameId).emit("turnChanged", {
-                        playerId: currentPlayer.user.toString(),
-                        username: currentPlayer.username,
+                if (nextHandGame.status === "completed") {
+                  // Game has ended
+                  gameIo.to(gameId).emit("gameEnded", {
+                    message: "Game ended - not enough active players",
+                  });
+                } else {
+                  // Log deck status before starting next hand
+                  console.log(
+                    `Deck status before starting next hand: ${nextHandGame.deck.length} cards`
+                  );
+
+                  // Start next hand with the fresh deck
+                  const newHand = await safeAsyncOperation(() =>
+                    gameLogic.startNewHand(nextHandGame)
+                  );
+
+                  // VALIDATION: Check for duplicate cards
+                  try {
+                    gameLogic.validateGameCards(newHand);
+                    console.log("Card validation passed for new hand");
+                  } catch (validationError) {
+                    console.error(
+                      `Card validation failed: ${validationError.message}`
+                    );
+                    // Try to fix the issue
+                    const debugging = require("../utils/debugging");
+                    try {
+                      const fixResult = await debugging.fixDuplicateCards(
+                        newHand
+                      );
+                      console.log(
+                        `Fixed duplicate cards: ${JSON.stringify(fixResult)}`
+                      );
+                    } catch (fixError) {
+                      console.error(
+                        `Failed to fix duplicate cards: ${fixError.message}`
+                      );
+                      gameIo.to(gameId).emit("gameError", {
+                        message:
+                          "Error in card distribution. Game will restart.",
+                        details: validationError.message,
                       });
+                      return;
                     }
                   }
-                }
 
-                // Update game state
-                gameIo
-                  .to(gameId)
-                  .emit(
-                    "gameUpdate",
-                    gameLogic.getSanitizedGameState(bettingGame)
+                  // Emit new game state
+                  gameIo
+                    .to(gameId)
+                    .emit("newHand", gameLogic.getSanitizedGameState(newHand));
+
+                  // Log card distribution for verification
+                  console.log("Card distribution for new hand:");
+                  newHand.players.forEach((player) => {
+                    if (player.hand && player.hand.length) {
+                      console.log(
+                        `Player ${player.username} cards: ${player.hand
+                          .map((c) => `${c.rank}${c.suit[0]}`)
+                          .join(", ")}`
+                      );
+                    }
+                  });
+
+                  // Emit private cards to each player
+                  newHand.players.forEach((player) => {
+                    const socketId = userSockets.get(player.user.toString());
+                    if (socketId) {
+                      // Ensure we're sending a properly formatted hand object
+                      // IMPORTANT: Force a clean hand array to avoid reference issues
+                      const cleanHand = player.hand.map(card => ({
+                        suit: card.suit,
+                        rank: card.rank,
+                        value: card.value,
+                        code: card.code
+                      }));
+                      
+                      console.log(`EXPLICITLY sending new cards to ${player.username}:`, 
+                        cleanHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+                        
+                      // Send with a distinct event name to ensure client processing
+                      gameIo.to(socketId).emit("dealCards", {
+                        hand: cleanHand,
+                        newHand: true, // Add a flag to indicate this is from a new hand
+                        timestamp: Date.now() // Add timestamp to prevent caching
+                      });
+                      
+                      // Also send a direct message to ensure the client updates
+                      gameIo.to(socketId).emit("forceCardUpdate", {
+                        hand: cleanHand,
+                        message: "Your cards have been updated for the new hand"
+                      });
+                    }
+                  });
+
+                  // Start the betting round
+                  const bettingGame = await safeAsyncOperation(() =>
+                    gameLogic.startBettingRound(newHand)
                   );
+
+                  // Notify the current player it's their turn
+                  if (bettingGame.currentTurn) {
+                    const currentPlayer = bettingGame.players.find(
+                      (p) =>
+                        p.user.toString() === bettingGame.currentTurn.toString()
+                    );
+
+                    if (currentPlayer) {
+                      const socketId = userSockets.get(
+                        currentPlayer.user.toString()
+                      );
+                      if (socketId) {
+                        gameIo.to(socketId).emit("yourTurn", {
+                          options: gameLogic.getPlayerOptions(
+                            bettingGame,
+                            currentPlayer.user
+                          ),
+                          timeLimit: 30,
+                        });
+
+                        gameIo.to(gameId).emit("turnChanged", {
+                          playerId: currentPlayer.user.toString(),
+                          username: currentPlayer.username,
+                        });
+                      }
+                    }
+                  }
+
+                  // Update game state
+                  gameIo
+                    .to(gameId)
+                    .emit(
+                      "gameUpdate",
+                      gameLogic.getSanitizedGameState(bettingGame)
+                    );
+                }
+              } catch (error) {
+                console.error(
+                  `Error handling next hand for game ${gameId}:`,
+                  error
+                );
+
+                // Notify clients about the error but don't crash the game
+                gameIo.to(gameId).emit("gameError", {
+                  message: "Error preparing next hand, please refresh the page",
+                  details: error.message,
+                });
+
+                // Try to recover by sending a game update
+                try {
+                  const currentGame = await Game.findOne({
+                    gameId: game.gameId,
+                  });
+                  if (currentGame) {
+                    gameIo
+                      .to(gameId)
+                      .emit(
+                        "gameUpdate",
+                        gameLogic.getSanitizedGameState(currentGame)
+                      );
+                  }
+                } catch (updateError) {
+                  console.error(
+                    "Error sending recovery game update:",
+                    updateError
+                  );
+                }
               }
-            }, 5000); // 5 second delay before next hand
+            }, 15000); // Changed to 15 second delay before next hand
 
             return;
           }
@@ -569,7 +733,7 @@ module.exports = (io) => {
                 pot: game.pot,
               });
 
-              // Prepare for next hand after a delay
+              // Prepare for next hand after a delay - REPLACE WITH THE IMPROVED IMPLEMENTATION
               setTimeout(async () => {
                 try {
                   // Use the safe operation wrapper for handling next hand preparation
@@ -578,11 +742,19 @@ module.exports = (io) => {
                     const freshGame = await Game.findOne({
                       gameId: game.gameId,
                     });
+
                     if (!freshGame) {
                       throw new Error(
                         `Game ${game.gameId} not found when preparing next hand`
                       );
                     }
+
+                    // Create a fresh deck for the next hand - THIS IS KEY
+                    const cardDeck = require("../utils/cardDeck");
+                    freshGame.deck = cardDeck.createDeck();
+                    console.log(
+                      `Created fresh deck with ${freshGame.deck.length} cards for next hand`
+                    );
 
                     // Use our utility from gameLogic but with the fresh game object
                     return await gameLogic.prepareNextHand(freshGame);
@@ -594,10 +766,45 @@ module.exports = (io) => {
                       message: "Game ended - not enough active players",
                     });
                   } else {
-                    // Start next hand
+                    // Log deck status before starting next hand
+                    console.log(
+                      `Deck status before starting next hand: ${nextHandGame.deck.length} cards`
+                    );
+
+                    // Start next hand with the fresh deck
                     const newHand = await safeAsyncOperation(() =>
                       gameLogic.startNewHand(nextHandGame)
                     );
+
+                    // VALIDATION: Check for duplicate cards
+                    try {
+                      gameLogic.validateGameCards(newHand);
+                      console.log("Card validation passed for new hand");
+                    } catch (validationError) {
+                      console.error(
+                        `Card validation failed: ${validationError.message}`
+                      );
+                      // Try to fix the issue
+                      const debugging = require("../utils/debugging");
+                      try {
+                        const fixResult = await debugging.fixDuplicateCards(
+                          newHand
+                        );
+                        console.log(
+                          `Fixed duplicate cards: ${JSON.stringify(fixResult)}`
+                        );
+                      } catch (fixError) {
+                        console.error(
+                          `Failed to fix duplicate cards: ${fixError.message}`
+                        );
+                        gameIo.to(gameId).emit("gameError", {
+                          message:
+                            "Error in card distribution. Game will restart.",
+                          details: validationError.message,
+                        });
+                        return;
+                      }
+                    }
 
                     // Emit new game state
                     gameIo
@@ -607,12 +814,45 @@ module.exports = (io) => {
                         gameLogic.getSanitizedGameState(newHand)
                       );
 
+                    // Log card distribution for verification
+                    console.log("Card distribution for new hand:");
+                    newHand.players.forEach((player) => {
+                      if (player.hand && player.hand.length) {
+                        console.log(
+                          `Player ${player.username} cards: ${player.hand
+                            .map((c) => `${c.rank}${c.suit[0]}`)
+                            .join(", ")}`
+                        );
+                      }
+                    });
+
                     // Emit private cards to each player
                     newHand.players.forEach((player) => {
                       const socketId = userSockets.get(player.user.toString());
                       if (socketId) {
+                        // Ensure we're sending a properly formatted hand object
+                        // IMPORTANT: Force a clean hand array to avoid reference issues
+                        const cleanHand = player.hand.map(card => ({
+                          suit: card.suit,
+                          rank: card.rank,
+                          value: card.value,
+                          code: card.code
+                        }));
+                        
+                        console.log(`EXPLICITLY sending new cards to ${player.username}:`, 
+                          cleanHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+                          
+                        // Send with a distinct event name to ensure client processing
                         gameIo.to(socketId).emit("dealCards", {
-                          hand: player.hand,
+                          hand: cleanHand,
+                          newHand: true, // Add a flag to indicate this is from a new hand
+                          timestamp: Date.now() // Add timestamp to prevent caching
+                        });
+                        
+                        // Also send a direct message to ensure the client updates
+                        gameIo.to(socketId).emit("forceCardUpdate", {
+                          hand: cleanHand,
+                          message: "Your cards have been updated for the new hand"
                         });
                       }
                     });
@@ -692,7 +932,7 @@ module.exports = (io) => {
                     );
                   }
                 }
-              }, 5000);
+              }, 15000); // Changed to 15 second delay before next hand
 
               return;
             }
@@ -988,6 +1228,7 @@ module.exports = (io) => {
       }
     });
 
+    // Full implementation for socket.on("initializeGame")
     socket.on("initializeGame", async ({ gameId, userId }) => {
       console.log(
         `Received initializeGame event for game ${gameId} from user ${userId}`
@@ -1028,57 +1269,155 @@ module.exports = (io) => {
             `Game ${gameId} already has cards dealt, sending current state`
           );
 
-          // Just send current game state
-          const sanitizedGame = gameLogic.getSanitizedGameState(game);
-          gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
+          // Check for duplicate cards before proceeding
+          const debugging = require("../utils/debugging");
+          const checkResult = debugging.checkGameForDuplicates(game);
 
-          // Resend private cards to each player
-          game.players.forEach((player) => {
-            if (player.hand && player.hand.length > 0) {
-              const socketId = userSockets.get(player.user.toString());
-              if (socketId) {
-                gameIo.to(socketId).emit("dealCards", {
-                  hand: player.hand,
-                });
-                console.log(`Re-sent cards to player ${player.username}`);
-              }
-            }
-          });
-
-          // If there's a current turn, notify that player
-          if (game.currentTurn) {
-            const currentPlayer = game.players.find(
-              (p) => p.user.toString() === game.currentTurn.toString()
+          if (checkResult.hasDuplicates) {
+            console.error(
+              `Duplicate cards detected in game ${gameId}:`,
+              checkResult.duplicates
             );
 
-            if (currentPlayer) {
-              const socketId = userSockets.get(currentPlayer.user.toString());
-              if (socketId) {
-                gameIo.to(socketId).emit("yourTurn", {
-                  options: gameLogic.getPlayerOptions(game, currentPlayer.user),
-                  timeLimit: 30,
-                });
+            // Try to fix the duplicates
+            try {
+              const fixResult = await debugging.fixDuplicateCards(game);
+              console.log(
+                `Fixed duplicate cards: ${JSON.stringify(fixResult)}`
+              );
 
-                gameIo.to(gameId).emit("turnChanged", {
-                  playerId: currentPlayer.user.toString(),
-                  username: currentPlayer.username,
-                });
+              // Reload the game to get the fixed state
+              const updatedGame = await Game.findOne({ gameId });
+
+              // Just send current game state
+              const sanitizedGame =
+                gameLogic.getSanitizedGameState(updatedGame);
+              gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
+
+              // Resend private cards to each player
+              updatedGame.players.forEach((player) => {
+                if (player.hand && player.hand.length > 0) {
+                  const socketId = userSockets.get(player.user.toString());
+                  if (socketId) {
+                    gameIo.to(socketId).emit("dealCards", {
+                      hand: player.hand,
+                    });
+                    console.log(`Re-sent cards to player ${player.username}`);
+                  }
+                }
+              });
+
+              // If there's a current turn, notify that player
+              if (updatedGame.currentTurn) {
+                const currentPlayer = updatedGame.players.find(
+                  (p) =>
+                    p.user.toString() === updatedGame.currentTurn.toString()
+                );
+
+                if (currentPlayer) {
+                  const socketId = userSockets.get(
+                    currentPlayer.user.toString()
+                  );
+                  if (socketId) {
+                    gameIo.to(socketId).emit("yourTurn", {
+                      options: gameLogic.getPlayerOptions(
+                        updatedGame,
+                        currentPlayer.user
+                      ),
+                      timeLimit: 30,
+                    });
+
+                    gameIo.to(gameId).emit("turnChanged", {
+                      playerId: currentPlayer.user.toString(),
+                      username: currentPlayer.username,
+                    });
+                  }
+                }
+              }
+            } catch (fixError) {
+              console.error(
+                `Failed to fix duplicate cards: ${fixError.message}`
+              );
+              socket.emit("gameError", {
+                message:
+                  "Card distribution error detected. Please restart the game.",
+                details: fixError.message,
+              });
+              return;
+            }
+          } else {
+            // No duplicates, proceed normally
+            // Just send current game state
+            const sanitizedGame = gameLogic.getSanitizedGameState(game);
+            gameIo.to(gameId).emit("gameUpdate", sanitizedGame);
+
+            // Resend private cards to each player
+            game.players.forEach((player) => {
+              if (player.hand && player.hand.length > 0) {
+                const socketId = userSockets.get(player.user.toString());
+                if (socketId) {
+                  gameIo.to(socketId).emit("dealCards", {
+                    hand: player.hand,
+                  });
+                  console.log(`Re-sent cards to player ${player.username}`);
+                }
+              }
+            });
+
+            // If there's a current turn, notify that player
+            if (game.currentTurn) {
+              const currentPlayer = game.players.find(
+                (p) => p.user.toString() === game.currentTurn.toString()
+              );
+
+              if (currentPlayer) {
+                const socketId = userSockets.get(currentPlayer.user.toString());
+                if (socketId) {
+                  gameIo.to(socketId).emit("yourTurn", {
+                    options: gameLogic.getPlayerOptions(
+                      game,
+                      currentPlayer.user
+                    ),
+                    timeLimit: 30,
+                  });
+
+                  gameIo.to(gameId).emit("turnChanged", {
+                    playerId: currentPlayer.user.toString(),
+                    username: currentPlayer.username,
+                  });
+                }
               }
             }
           }
         } else {
           console.log(`Game ${gameId} needs first hand initialization`);
 
-          // Initialize first hand
+          // Make sure there's a fresh deck
+          console.log("Creating a fresh deck for the game");
+          game.deck = require("../utils/cardDeck").createDeck();
+
+          // Initialize first hand with a fresh deck
           const updatedGame = await gameLogic.startNewHand(game);
           console.log(`First hand started for game ${gameId}`);
+
+          // VALIDATION: Check for duplicate cards
+          try {
+            gameLogic.validateGameCards(updatedGame);
+          } catch (validationError) {
+            console.error(`Card validation failed: ${validationError.message}`);
+            socket.emit("gameError", {
+              message: "Card validation failed. Please restart the game.",
+              details: validationError.message,
+            });
+            return; // Exit the function to prevent continuing with invalid cards
+          }
 
           // Emit game state to all players
           gameIo
             .to(gameId)
             .emit("gameStarted", gameLogic.getSanitizedGameState(updatedGame));
 
-          // Emit private cards to each player
+          // FIXED: Emit private cards to each player with unique cards
           updatedGame.players.forEach((player) => {
             const socketId = userSockets.get(player.user.toString());
             if (socketId) {

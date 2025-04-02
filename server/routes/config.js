@@ -12,7 +12,7 @@ const fs = require('fs');
  */
 router.get('/', (req, res) => {
   // Use local URLs instead of ngrok
-  const serverUrl = 'http://localhost:3000';
+  const serverUrl = 'http://localhost:5000'; // Updated from 3000 to 5000
   const clientUrl = 'http://localhost:8080';
   
   // Get client origin from request headers for CORS support
@@ -74,8 +74,8 @@ function updateStaticConfig(configData) {
 
 // Update static config with local settings
 updateStaticConfig({
-  apiUrl: 'http://localhost:3000',
-  socketUrl: 'http://localhost:3000',
+  apiUrl: 'http://localhost:5000', // Updated from 3000 to 5000
+  socketUrl: 'http://localhost:5000', // Updated from 3000 to 5000
   env: process.env.NODE_ENV || 'development',
   version: process.env.npm_package_version || '1.0.0',
   timestamp: new Date().toISOString()

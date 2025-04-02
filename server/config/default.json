@@ -1,7 +1,7 @@
 {
-    "jwtSecret": "nyangunisecret",
-    "port": 3000,
-    "serverUrl": "http://localhost:3000",
-    "clientUrl": "http://localhost:8080",
-    "mongoURI": "mongodb://localhost:27017/nyanguni-kancane"
-  }
+  "jwtSecret": "nyangunisecret",
+  "port": 5000,
+  "serverUrl": "http://localhost:5000",
+  "clientUrl": "http://localhost:8080",
+  "mongoURI": "mongodb://localhost:27017/nyanguni-kancane"
+}

@@ -1,6 +1,4 @@
-// client/src/components/Game/PlayerList.vue
-// Update PlayerList component to correctly handle player data
-
+<!-- client/src/components/Game/PlayerList.vue -->
 <template>
   <div class="players-container">
     <!-- Show message when no players -->
@@ -10,7 +8,7 @@
 
     <div 
       v-for="player in players" 
-      :key="player.id || index" 
+      :key="`player-${player.id}-${updateKey}`" 
       class="player-spot" 
       :class="{
         'current-player': currentUser && player.id === currentUser.id,
@@ -29,12 +27,12 @@
       </div>
 
       <div v-if="currentUser && player.id === currentUser.id" class="player-hand">
-        <div v-for="(card, index) in playerHand" :key="index" class="card-display player-card">
+        <div v-for="(card, index) in displayPlayerHand" :key="`card-${index}-${card.rank}-${card.suit}`" class="card-display player-card">
           {{ formatCard(card) }}
         </div>
       </div>
       <div v-else class="player-hand">
-        <div v-for="i in (player.hasCards ? 2 : 0)" :key="`back-${i}`" class="card-display card-back">
+        <div v-for="i in (player.hasCards ? 2 : 0)" :key="`back-${i}-${updateKey}`" class="card-display card-back">
           ●●
         </div>
       </div>
@@ -69,7 +67,13 @@ export default {
     }
   },
 
-  // Add a computed property to log player data for debugging
+  data() {
+    return {
+      updateKey: 0, // Add an update key to force re-rendering
+      lastHandUpdate: Date.now()
+    };
+  },
+  
   computed: {
     playerDebugInfo() {
       if (!this.players) return 'No players';
@@ -77,13 +81,57 @@ export default {
       // Log the first player for debugging
       const firstPlayer = this.players[0];
       return firstPlayer ? `First player: ${JSON.stringify(firstPlayer)}` : 'No first player';
+    },
+    
+    // Add a computed property to handle player hand display
+    displayPlayerHand() {
+      // This adds reactivity by creating new card objects
+      return this.playerHand.map(card => ({
+        ...card,
+        _key: `${card.rank}-${card.suit}-${this.lastHandUpdate}`
+      }));
     }
   },
 
-  // Add a mounted hook to log player data when component mounts
+  watch: {
+    // Watch playerHand for changes and force updates
+    playerHand: {
+      handler(newHand) {
+        if (newHand && newHand.length > 0) {
+          console.log('PlayerList detected hand change:', 
+            newHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+          this.updateKey++; // Increment to force re-render
+          this.lastHandUpdate = Date.now();
+        }
+      },
+      deep: true
+    }
+  },
+  
   mounted() {
     console.log('PlayerList mounted with players:', this.players);
     console.log('CurrentUser in PlayerList:', this.currentUser);
+    console.log('Initial playerHand:', this.playerHand);
+    
+    // Set up periodic checks for updates
+    this.updateInterval = setInterval(() => {
+      this.updateKey++; // Force re-render periodically
+    }, 5000);
+  },
+  
+  beforeDestroy() {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+    }
+  },
+  
+  methods: {
+    // Add a method to force update
+    forceUpdate() {
+      this.updateKey++;
+      this.lastHandUpdate = Date.now();
+      console.log('PlayerList forced update');
+    }
   }
 };
 </script>
