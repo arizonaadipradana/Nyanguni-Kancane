@@ -20,7 +20,7 @@
         </div>
         <div class="community-cards" v-else>
           <div v-for="(card, index) in displayCommunityCards" :key="'community-' + index"
-            class="card-display community-card">
+            class="card-display community-card" :data-suit="card.suit">
             {{ formatCard(card) }}
           </div>
         </div>
@@ -633,7 +633,9 @@ export default {
 }
 
 .card-display[data-suit="hearts"],
-.card-display[data-suit="diamonds"] {
+.card-display[data-suit="diamonds"],
+.community-card[data-suit="hearts"],
+.community-card[data-suit="diamonds"] {
   color: red;
 }
 

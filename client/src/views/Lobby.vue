@@ -28,20 +28,19 @@
           </button>
         </div>
 
-        <div class="card">
+        <!-- <div class="card">
           <h3>Create New Game</h3>
           <p>Start a new poker table and invite other players</p>
           <button @click="handleCreateGame" class="btn" :disabled="isCreating || isJoining">
             {{ isCreating ? 'Creating...' : 'Create Game' }}
           </button>
 
-          <!-- Add this fallback button for troubleshooting -->
           <button v-if="showFallbackOptions" @click="createGameDirectly" class="btn btn-secondary fallback-btn">
             Create Game (Fallback)
           </button>
-        </div>
+        </div> -->
 
-        <div v-if="showFallbackOptions" class="debug-section">
+        <!-- <div v-if="showFallbackOptions" class="debug-section">
           <h4>Troubleshooting</h4>
           <button @click="testApiConnection" class="debug-btn">
             Test API Connection
@@ -49,7 +48,7 @@
           <div v-if="apiTestResult" class="api-test-result">
             <pre>{{ apiTestResult }}</pre>
           </div>
-        </div>
+        </div> -->
 
         <div class="card">
           <h3>Join Existing Game</h3>
@@ -58,7 +57,8 @@
             <input type="text" v-model="gameIdInput" placeholder="Enter Game ID" maxlength="6" class="form-control"
               :disabled="isCreating || isJoining" />
           </div>
-          <button @click="handleJoinGame" class="btn" :disabled="!isValidGameId || isCreating || isJoining">
+          <button @click="handleJoinGame" class="btn"
+            :disabled="(gameIdInput ? gameIdInput.length !== 6 : true) || isCreating || isJoining">
             {{ isJoining ? 'Joining...' : 'Join Game' }}
           </button>
         </div>
@@ -111,7 +111,7 @@ export default {
     if (!this.currentUser && localStorage.getItem('token')) {
       console.log('No user data in Lobby, attempting to fetch from server');
       this.statusMessage = 'Loading user data...';
-      
+
       try {
         // Dispatch the action to fetch user data
         await this.$store.dispatch('fetchUserData');
@@ -182,16 +182,16 @@ export default {
       this.isCreating = true;
       this.statusMessage = 'Creating new game...';
       this.clearErrorMessage();
-      
+
       try {
         console.log('Creating game with user:', this.currentUser);
-        
+
         // Make a direct axios call instead of using the store action
         const token = localStorage.getItem('token');
         if (!token) {
           throw new Error('No authentication token found');
         }
-        
+
         const response = await axios.post('/api/games', {
           creatorId: this.currentUser.id,
           creatorName: this.currentUser.username
@@ -201,18 +201,18 @@ export default {
           },
           timeout: 10000 // 10 second timeout
         });
-        
+
         console.log('Game creation response:', response.data);
-        
+
         if (response.data && response.data.gameId) {
           const gameId = response.data.gameId;
           console.log('Game created successfully with ID:', gameId);
-          
+
           this.statusMessage = 'Game created! Redirecting...';
-          
+
           // Force update Vuex state
           this.$store.commit('SET_CURRENT_GAME_ID', gameId);
-          
+
           // Add a small delay before navigation
           setTimeout(() => {
             // Use direct window.location for more reliable navigation
@@ -223,9 +223,9 @@ export default {
         }
       } catch (error) {
         console.error('Error creating game:', error);
-        
+
         let errorMsg = 'Error creating game. Please try again.';
-        
+
         if (error.response) {
           console.error('Server response:', error.response.data);
           errorMsg = error.response.data.msg || `Server error: ${error.response.status}`;
@@ -234,7 +234,7 @@ export default {
         } else {
           errorMsg = error.message || errorMsg;
         }
-        
+
         this.SET_ERROR_MESSAGE(errorMsg);
         this.statusMessage = '';
         this.isCreating = false;
@@ -243,36 +243,36 @@ export default {
 
     async handleJoinGame() {
       if (!this.isValidGameId) return;
-      
+
       // Safety check - ensure we have user data
       if (!this.currentUser) {
         console.error('Cannot join game: No user data available');
         this.SET_ERROR_MESSAGE('Your session appears to be invalid. Please log out and log in again.');
         return;
       }
-      
+
       // Use the direct join function
       await this.directJoinGame(this.gameIdInput);
     },
-    
+
     async directJoinGame(gameId) {
       if (!gameId) {
         this.SET_ERROR_MESSAGE('Game ID is required');
         return;
       }
-      
+
       this.isJoining = true;
       this.statusMessage = 'Joining game...';
-      
+
       try {
         console.log(`Directly joining game ${gameId}`);
-        
+
         // Get auth token
         const token = localStorage.getItem('token');
         if (!token) {
           throw new Error('No authentication token found');
         }
-        
+
         // Join the game via API
         const response = await axios.post(`/api/games/join/${gameId}`, {
           playerId: this.currentUser.id,
@@ -283,22 +283,22 @@ export default {
           },
           timeout: 5000
         });
-        
+
         console.log('Join game response:', response.data);
-        
+
         // Set game ID in store
         this.$store.commit('SET_CURRENT_GAME_ID', gameId);
-        
+
         // Navigate to game page
         this.statusMessage = 'Joined! Redirecting...';
-        
+
         // Use window.location for direct navigation
         window.location.href = `/game/${gameId}`;
       } catch (error) {
         console.error('Error joining game:', error);
-        
+
         let errorMsg = 'Error joining game. Please try again.';
-        
+
         if (error.response) {
           console.error('Server response:', error.response.data);
           errorMsg = error.response.data.msg || `Server error: ${error.response.status}`;
@@ -307,7 +307,7 @@ export default {
         } else {
           errorMsg = error.message || errorMsg;
         }
-        
+
         this.SET_ERROR_MESSAGE(errorMsg);
       } finally {
         this.statusMessage = '';
