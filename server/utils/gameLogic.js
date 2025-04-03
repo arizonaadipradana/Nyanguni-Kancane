@@ -769,13 +769,18 @@ const gameLogic = {
    * @param {Object} game - Game document
    * @returns {Object} Showdown results
    */
+  /**
+   * Process the showdown (compare hands) with enhanced balance updates
+   * @param {Object} game - Game document
+   * @returns {Object} Showdown results
+   */
   async processShowdown(game) {
     try {
       // Get players who haven't folded
       const activePlayers = game.players.filter(
         (p) => p.isActive && !p.hasFolded
       );
-
+  
       // Prepare hands for evaluation
       const playerHands = activePlayers.map((player) => ({
         playerId: player.user.toString(),
@@ -783,10 +788,15 @@ const gameLogic = {
         holeCards: player.hand,
         communityCards: game.communityCards,
       }));
-
+  
       // Determine winner(s)
       const result = handEvaluator.determineWinners(playerHands);
-
+  
+      // Log detailed results for debugging
+      console.log("Showdown results determined:");
+      console.log(`- Winners: ${result.winners.map(w => w.username).join(', ')}`);
+      console.log(`- Hand types: ${result.winners.map(w => w.handName).join(', ')}`);
+      
       // Store hand results in game history
       game.handResults.push({
         winners: result.winners.map((w) => w.playerId),
@@ -799,14 +809,14 @@ const gameLogic = {
         communityCards: game.communityCards,
         timestamp: Date.now(),
       });
-
+  
       // Award pot to winner(s) - this handles database updates too
       const winnerPlayers = result.winners.map((w) =>
         this.getPlayerById(game, w.playerId)
       );
-
+  
       await this.awardPot(game, winnerPlayers);
-
+  
       // Also update all other players' balances to the database
       for (const player of game.players) {
         // Skip winners as they've already been updated
@@ -817,17 +827,13 @@ const gameLogic = {
         ) {
           continue;
         }
-
+  
         try {
           // Update the loser's balance in the database
           await User.findByIdAndUpdate(
             player.user,
             { $set: { balance: player.totalChips } },
             { new: true }
-          );
-
-          console.log(
-            `Updated database balance for loser ${player.username} to ${player.totalChips}`
           );
         } catch (error) {
           console.error(
@@ -836,29 +842,27 @@ const gameLogic = {
           );
         }
       }
-
+  
+      // Prepare detailed winner data with proper error handling
+      const safeWinners = result.winners.map(w => {
+        const player = this.getPlayerById(game, w.playerId);
+        return {
+          playerId: w.playerId,
+          username: w.username || "Unknown Player",
+          hand: player && Array.isArray(player.hand) ? player.hand : [],
+          handName: w.handName || "Unknown Hand"
+        };
+      });
+  
+      // Return processed result
       return {
-        winners: result.winners.map(w => {
-          // Safely get the player and their hand
-          const player = this.getPlayerById(game, w.playerId);
-          return {
-            playerId: w.playerId,
-            username: w.username,
-            hand: player ? (player.hand || []) : [], // Add null check and fallback
-            handName: w.handName
-          };
-        }),
-        hands: result.allHands.map(h => {
-          // Check if evaluatedHand exists and has cards
-          const cards = h.evaluatedHand && h.evaluatedHand.cards ? h.evaluatedHand.cards : [];
-          return {
-            playerId: h.playerId,
-            username: h.username,
-            hand: cards,
-            handRank: h.evaluatedHand ? h.evaluatedHand.rank : 0,
-            handName: h.evaluatedHand ? h.evaluatedHand.handName : 'Unknown'
-          };
-        })
+        winners: safeWinners,
+        hands: result.allHands.map(h => ({
+          playerId: h.playerId,
+          username: h.username || "Unknown Player",
+          hand: h.hand || [],
+          handName: h.handName || "Unknown Hand"
+        }))
       };
     } catch (error) {
       console.error("Error in processShowdown:", error);

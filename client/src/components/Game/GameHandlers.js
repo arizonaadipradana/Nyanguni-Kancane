@@ -369,15 +369,25 @@ export default {
        * Handle hand result event with better error handling
        * @param {Object} result - Hand result data
        */
+      /**
+       * Handle hand result event with better error handling
+       * @param {Object} result - Hand result data
+       */
       handleHandResult(result) {
         console.log("Received hand result:", result);
+
+        // Safety check for undefined or invalid data
+        if (!result) {
+          console.warn("Received empty hand result");
+          return;
+        }
 
         // Safely set the handResult
         component.handResult = result || {};
         component.showResult = true;
 
         // Make sure winners array exists and is valid
-        const safeWinners = result?.winners || [];
+        const safeWinners = Array.isArray(result.winners) ? result.winners : [];
 
         // Safely prepare winner display data
         component.handWinners = safeWinners.map((winner) => {
@@ -385,7 +395,12 @@ export default {
           if (!winner.hand || !Array.isArray(winner.hand)) {
             winner.hand = [];
           }
-          return winner;
+          return {
+            playerId: winner.playerId || "unknown",
+            username: winner.username || "Unknown Player",
+            handName: winner.handName || "Unknown Hand",
+            hand: Array.isArray(winner.hand) ? winner.hand : [],
+          };
         });
 
         component.winningPot = result?.pot || 0;
@@ -396,7 +411,9 @@ export default {
           .map((winner) => winner.username || "Unknown")
           .join(", ");
 
-        component.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
+        component.addToLog(
+          `Hand complete. Winner(s): ${winnerNames || "Unknown"}`
+        );
       },
 
       /**

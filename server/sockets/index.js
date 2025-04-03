@@ -494,18 +494,38 @@ module.exports = (io) => {
             );
 
             const winnerHand = winnerPlayer.hand || [];
-            gameIo.to(gameId).emit("handResult", {
-              winners: [
-                {
-                  playerId: winnerPlayer.user.toString(),
-                  username: winnerPlayer.username,
-                  handName: "Winner by fold",
-                  hand: winnerHand,
-                },
-              ],
-              pot: game.pot,
-              message: result.message,
-            });
+            if (winnerPlayer && winnerPlayer.user) {
+              // Log data for debugging
+              console.log(
+                `Emitting fold win for player: ${winnerPlayer.username}`
+              );
+              console.log(
+                `Hand data: ${JSON.stringify(winnerPlayer.hand || [])}`
+              );
+
+              gameIo.to(gameId).emit("handResult", {
+                winners: [
+                  {
+                    playerId: winnerPlayer.user.toString(),
+                    username: winnerPlayer.username || "Unknown Player",
+                    handName: "Winner by fold",
+                    hand: Array.isArray(winnerPlayer.hand)
+                      ? winnerPlayer.hand
+                      : [], // Ensure hand is an array
+                  },
+                ],
+                pot: game.pot,
+                message: result.message,
+              });
+            } else {
+              console.error(
+                "Invalid winner player data for fold win:",
+                winnerPlayer
+              );
+              gameIo.to(gameId).emit("gameError", {
+                message: "Error processing game result",
+              });
+            }
             // Prepare for next hand after a delay - UPDATED WITH IMPROVED IMPLEMENTATION
             setTimeout(async () => {
               try {
@@ -736,27 +756,65 @@ module.exports = (io) => {
               // Process showdown
               const showdownResult = await gameLogic.processShowdown(game);
 
-              const safeWinners = showdownResult.winners.map((winner) => {
-                // Get the player object safely
-                const player = game.players.find(
-                  (p) => p.user && p.user.toString() === winner.playerId
-                );
+              // Log showdown result data for debugging
+              console.log(
+                `Showdown results - Winners: ${
+                  showdownResult.winners?.length || 0
+                }, Pot: ${game.pot}`
+              );
 
-                // Return formatted winner with hand
-                return {
-                  ...winner,
-                  hand: player && player.hand ? player.hand : [], // Add more null checks
-                };
-              });
+              // Validate winner data before sending
+              if (
+                showdownResult.winners &&
+                Array.isArray(showdownResult.winners) &&
+                showdownResult.winners.length > 0
+              ) {
+                // Get detailed winner info for logging
+                const winnerInfo = showdownResult.winners
+                  .map(
+                    (w) =>
+                      `${w.username || "Unknown"} with ${
+                        w.handName || "Unknown Hand"
+                      }`
+                  )
+                  .join(", ");
+                console.log(`Showdown winners: ${winnerInfo}`);
 
-              // Send the result with better error handling
-              gameIo.to(gameId).emit("handResult", {
-                winners: safeWinners,
-                hands: showdownResult.hands || [], // Add fallback
-                pot: game.pot,
-              });
+                // Send result to clients with improved data safety
+                gameIo.to(gameId).emit("handResult", {
+                  winners: showdownResult.winners.map((w) => {
+                    // Safely get the player and their hand
+                    const player = game.players.find(
+                      (p) => p.user && p.user.toString() === w.playerId
+                    );
+                    return {
+                      playerId: w.playerId || "unknown",
+                      username: w.username || "Unknown Player",
+                      handName: w.handName || "Unknown Hand",
+                      hand:
+                        player && Array.isArray(player.hand) ? player.hand : [], // Ensure hand is an array
+                    };
+                  }),
+                  hands: Array.isArray(showdownResult.hands)
+                    ? showdownResult.hands.map((h) => {
+                        return {
+                          playerId: h.playerId || "unknown",
+                          username: h.username || "Unknown Player",
+                          hand: Array.isArray(h.hand) ? h.hand : [],
+                          handName: h.handName || "Unknown Hand",
+                        };
+                      })
+                    : [],
+                  pot: game.pot,
+                });
+              } else {
+                console.error("Invalid showdown result data:", showdownResult);
+                gameIo.to(gameId).emit("gameError", {
+                  message: "Error processing showdown result",
+                });
+              }
 
-              // Prepare for next hand after a delay - REPLACE WITH THE IMPROVED IMPLEMENTATION
+              // Prepare for next hand after a delay
               setTimeout(async () => {
                 try {
                   // Use the safe operation wrapper for handling next hand preparation

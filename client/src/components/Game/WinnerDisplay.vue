@@ -4,8 +4,9 @@
     <div class="winner-overlay"></div>
     <div class="winner-content">
       <h2 class="winner-title">
-        <span v-if="winners.length === 1">Winner!</span>
-        <span v-else>Split Pot!</span>
+        <span v-if="winners && winners.length === 1">Winner!</span>
+        <span v-else-if="winners && winners.length > 1">Split Pot!</span>
+        <span v-else>Game Result</span>
       </h2>
       
       <div class="winner-info" v-for="(winner, index) in winners" :key="index">
@@ -13,13 +14,24 @@
         <div class="winner-hand-name">{{ winner.handName }}</div>
         
         <div class="winner-cards">
-          <div 
-            v-for="(card, cardIndex) in getWinnerCards(winner)" 
-            :key="cardIndex" 
-            class="card-display"
-          >
-            {{ formatCard(card) }}
+          <div v-if="!winner.hand || winner.hand.length === 0" class="no-cards-message">
+            No cards to display
           </div>
+          <template v-else>
+            <div 
+              v-for="(card, cardIndex) in winner.hand" 
+              :key="cardIndex" 
+              class="card-display"
+              :class="{ 'highlighted': isCardInWinningHand(card, winner) }"
+            >
+              {{ formatCard(card) }}
+            </div>
+          </template>
+        </div>
+
+        <!-- Show pot amount for the winner -->
+        <div class="winner-pot">
+          Won {{ splitPotAmount(winner) }} chips
         </div>
       </div>
       
@@ -81,15 +93,18 @@ export default {
   },
   
   methods: {
-    // Safely get the winner's cards with fallbacks
-    getWinnerCards(winner) {
-      // Check if winner has hand property
-      if (!winner || !winner.hand) {
-        return [];
-      }
-      
-      // Add extra check to make sure all cards have rank and suit
-      return winner.hand.filter(card => card && card.rank && card.suit);
+    // Check if a card is part of the winning hand combination
+    isCardInWinningHand(card, winner) {
+      // In a real implementation, you would need logic to determine
+      // which cards actually formed the winning hand
+      // For now, we'll highlight all cards as winners
+      return true;
+    },
+    
+    // Calculate split pot amount for multiple winners
+    splitPotAmount(winner) {
+      if (this.winners.length <= 1) return this.pot;
+      return Math.floor(this.pot / this.winners.length);
     },
     
     startCountdown() {
@@ -197,6 +212,26 @@ export default {
   align-items: center;
   font-size: 24px;
   font-weight: bold;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card-display.highlighted {
+  box-shadow: 0 0 10px 2px #f1c40f;
+  transform: translateY(-5px);
+}
+
+.no-cards-message {
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.3);
+  border-radius: 5px;
+  color: #aaa;
+  font-style: italic;
+}
+
+.winner-pot {
+  margin-top: 10px;
+  font-size: 18px;
+  color: #f1c40f;
 }
 
 .countdown {

@@ -202,7 +202,30 @@ export default {
     ]),
 
     // Common methods from gameUtils.js
-    formatCard,
+    /**
+ * Format a card for display
+ * @param {Object} card - Card object with suit and rank
+ * @returns {String} Formatted card representation
+ */
+    formatCard(card) {
+      // Safety check for null or invalid cards
+      if (!card || !card.suit || !card.rank) {
+        console.warn('Invalid card data received:', card);
+        return '?';
+      }
+
+      const suitSymbols = {
+        hearts: '♥',
+        diamonds: '♦',
+        clubs: '♣',
+        spades: '♠'
+      };
+
+      // Make sure the suit is valid
+      const suitSymbol = suitSymbols[card.suit.toLowerCase()] || '?';
+
+      return `${card.rank}${suitSymbol}`;
+    },
     getDefaultOptions,
 
     yourTurn(data) {
@@ -640,6 +663,52 @@ export default {
       this.showWinnerDisplay = false;
       this.handWinners = [];
     },
+    handleHandResult(result) {
+      console.log("Received hand result:", result);
+
+      // Add safety checks and debug info for hand result processing
+      if (!result) {
+        console.error("Hand result is empty or invalid");
+        return;
+      }
+
+      // Deep inspect the result to see what we're receiving
+      console.log("Winners array:", JSON.stringify(result.winners));
+      console.log("Pot amount:", result.pot);
+
+      // Make sure winners array exists and is properly formatted
+      if (!result.winners || !Array.isArray(result.winners) || result.winners.length === 0) {
+        console.error("No valid winners in result data");
+        return;
+      }
+
+      // Create a safe copy of the winners with default values for missing properties
+      const safeWinners = result.winners.map(winner => ({
+        playerId: winner.playerId || "unknown",
+        username: winner.username || "Unknown Player",
+        handName: winner.handName || "Unknown Hand",
+        hand: Array.isArray(winner.hand) ? winner.hand : []
+      }));
+
+      // Safely set the handResult data
+      this.handWinners = safeWinners;
+      this.winningPot = result?.pot || 0;
+      this.showWinnerDisplay = true;
+
+      // Format winner names for log
+      const winnerNames = this.handWinners
+        .map(winner => winner.username)
+        .join(", ");
+
+      this.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
+    },
+
+    // Handle when winner display countdown completes
+    handleWinnerDisplayComplete() {
+      console.log('Winner display countdown complete');
+      this.showWinnerDisplay = false;
+      this.handWinners = [];
+    }
   },
 
   created() {
@@ -728,6 +797,11 @@ export default {
         this.forceCardUpdate();
       }
     }, 2000); // Check every 2 seconds
+
+    if (this.handlers.handleHandResult) {
+      SocketService.on('handResult', this.handlers.handleHandResult);
+      this.eventHandlers.push({ event: 'handResult', handler: this.handlers.handleHandResult });
+    }
   },
 
   beforeDestroy() {
