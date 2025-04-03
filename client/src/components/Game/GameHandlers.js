@@ -167,8 +167,18 @@ export default {
        * Handle cards being dealt with improved update
        * @param {Object} data - Card data
        */
+      /**
+       * Handle cards being dealt with improved update and error handling
+       * @param {Object} data - Card data
+       */
       handleDealCards(data) {
         console.log("Received cards:", data);
+
+        // Make sure the hand property exists and is an array
+        if (!data || !data.hand || !Array.isArray(data.hand)) {
+          console.warn("Received invalid card data:", data);
+          data = { hand: [] };
+        }
 
         // Force clear any existing cards first to ensure update
         component.playerHand = [];
@@ -176,7 +186,7 @@ export default {
         // Small delay to ensure state reset before setting new cards
         setTimeout(() => {
           // Apply the new cards
-          component.receiveCards(data);
+          component.playerHand = data.hand;
           component.addToLog("You have been dealt new cards");
 
           // Force UI update
@@ -261,10 +271,8 @@ export default {
         component.gameInitialized = true;
         component.gameInProgress = true;
 
-        // Start action timer if it exists on component
-        if (typeof component.startActionTimer === "function") {
-          component.startActionTimer(data.timeLimit || 30);
-        }
+        // Start action timer with the timeLimit from data or default to 60 seconds
+        component.startActionTimer(data.timeLimit || 60);
 
         // Set flag to avoid duplicate processing
         component.isYourTurnProcessed = true;
@@ -358,16 +366,36 @@ export default {
       },
 
       /**
-       * Handle hand result event
+       * Handle hand result event with better error handling
        * @param {Object} result - Hand result data
        */
       handleHandResult(result) {
-        component.handResult = result;
+        console.log("Received hand result:", result);
+
+        // Safely set the handResult
+        component.handResult = result || {};
         component.showResult = true;
 
-        const winnerNames = result.winners
-          .map((winner) => winner.username)
+        // Make sure winners array exists and is valid
+        const safeWinners = result?.winners || [];
+
+        // Safely prepare winner display data
+        component.handWinners = safeWinners.map((winner) => {
+          // Make sure the hand property exists and is an array
+          if (!winner.hand || !Array.isArray(winner.hand)) {
+            winner.hand = [];
+          }
+          return winner;
+        });
+
+        component.winningPot = result?.pot || 0;
+        component.showWinnerDisplay = true;
+
+        // Format winner names for log
+        const winnerNames = safeWinners
+          .map((winner) => winner.username || "Unknown")
           .join(", ");
+
         component.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
       },
 

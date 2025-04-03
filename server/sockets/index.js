@@ -235,7 +235,7 @@ module.exports = (io) => {
       console.log(
         `Received startGame event for game ${gameId} from user ${userId}`
       );
-    
+
       try {
         // Find the game with lean() for better performance
         const game = await Game.findOne({ gameId });
@@ -243,11 +243,11 @@ module.exports = (io) => {
           console.log(`Game not found: ${gameId}`);
           return socket.emit("gameError", { message: "Game not found" });
         }
-    
+
         // Check if player is the creator
         const creatorId = game.creator.user.toString();
         const requestUserId = userId.toString();
-    
+
         if (creatorId !== requestUserId) {
           console.log(
             `User ${userId} is not the creator (${creatorId}) of game ${gameId}`
@@ -256,7 +256,7 @@ module.exports = (io) => {
             message: "Only the creator can start the game",
           });
         }
-    
+
         // Check if enough players
         if (game.players.length < 2) {
           console.log(
@@ -266,7 +266,7 @@ module.exports = (io) => {
             message: "Need at least 2 players to start",
           });
         }
-    
+
         // Check if game already started
         if (game.status !== "waiting") {
           console.log(
@@ -276,55 +276,58 @@ module.exports = (io) => {
             message: "Game has already been started",
           });
         }
-    
+
         console.log(
           `Starting game ${gameId} with ${game.players.length} players`
         );
-    
+
         // IMPORTANT FIX: Create a completely fresh deck with enhanced shuffling
-        const cardDeck = require('../utils/cardDeck');
+        const cardDeck = require("../utils/cardDeck");
         game.deck = cardDeck.getFreshShuffledDeck();
-        
+
         // Log deck statistics to verify proper shuffling
         const deckStats = cardDeck.getDeckStats(game.deck);
         console.log(`New game deck statistics:`, deckStats);
-    
+
         // Update game status
         game.status = "active";
         game.bettingRound = "preflop";
         game.dealerPosition = 0; // First player is dealer for first hand
         await game.save();
-    
+
         // Send system message about game starting
         gameIo.to(gameId).emit("chatMessage", {
           type: "system",
           message: "The game has started",
           timestamp: new Date(),
         });
-    
+
         console.log(`Game ${gameId} status updated to active`);
-    
+
         // Initialize game with first hand - WRAPPED IN TRY/CATCH WITH BETTER ERROR HANDLING
         try {
           // Start a new hand with our enhanced shuffled deck
           const updatedGame = await gameLogic.startNewHand(game);
           console.log(`First hand started for game ${gameId}`);
-    
+
           // Log the cards dealt to each player for verification
-          updatedGame.players.forEach(player => {
+          updatedGame.players.forEach((player) => {
             if (player.hand && player.hand.length) {
-              console.log(`Player ${player.username} cards:`, player.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+              console.log(
+                `Player ${player.username} cards:`,
+                player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+              );
             }
           });
-    
+
           // VALIDATION: Check for duplicate cards
           try {
             gameLogic.validateGameCards(updatedGame);
           } catch (validationError) {
             console.error(`Card validation failed: ${validationError.message}`);
-            
+
             // Try to fix the issue
-            const debugging = require('../utils/debugging');
+            const debugging = require("../utils/debugging");
             try {
               await debugging.fixDuplicateCards(updatedGame);
               // Re-validate after fixing
@@ -337,21 +340,21 @@ module.exports = (io) => {
               return;
             }
           }
-    
+
           // Emit game state to all players
           gameIo
             .to(gameId)
-            .emit(
-              "gameStarted",
-              gameLogic.getSanitizedGameState(updatedGame)
-            );
+            .emit("gameStarted", gameLogic.getSanitizedGameState(updatedGame));
           console.log(`Game started event emitted for game ${gameId}`);
-    
+
           // Emit private cards to each player
           for (const player of updatedGame.players) {
             const socketId = userSockets.get(player.user.toString());
             if (socketId) {
-              console.log(`Sending cards to player ${player.username}:`, player.hand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+              console.log(
+                `Sending cards to player ${player.username}:`,
+                player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")
+              );
               gameIo.to(socketId).emit("dealCards", {
                 hand: player.hand,
               });
@@ -361,19 +364,19 @@ module.exports = (io) => {
               );
             }
           }
-    
+
           // Start the first betting round
           const gameWithBetting = await gameLogic.startBettingRound(
             updatedGame
           );
-    
+
           // Notify the current player it's their turn
           if (gameWithBetting.currentTurn) {
             const currentPlayer = gameWithBetting.players.find(
               (p) =>
                 p.user.toString() === gameWithBetting.currentTurn.toString()
             );
-    
+
             if (currentPlayer) {
               const socketId = userSockets.get(currentPlayer.user.toString());
               if (socketId) {
@@ -384,13 +387,13 @@ module.exports = (io) => {
                   ),
                   timeLimit: 30, // 30 seconds to make a decision
                 });
-    
+
                 // Let everyone know whose turn it is
                 gameIo.to(gameId).emit("turnChanged", {
                   playerId: currentPlayer.user.toString(),
                   username: currentPlayer.username,
                 });
-    
+
                 console.log(`It's ${currentPlayer.username}'s turn`);
               } else {
                 console.log(
@@ -403,7 +406,7 @@ module.exports = (io) => {
           } else {
             console.log(`No current turn set for game ${gameId}`);
           }
-    
+
           // Update game state for all players
           gameIo
             .to(gameId)
@@ -415,13 +418,13 @@ module.exports = (io) => {
         } catch (gameInitError) {
           console.error(`Error initializing game: ${gameInitError.message}`);
           console.error(gameInitError.stack);
-    
+
           // Try to recover
           try {
             // Reset the game status
             game.status = "waiting";
             await game.save();
-            
+
             // Notify clients about the error
             socket.emit("gameError", {
               message: "Failed to initialize game. Please try again.",
@@ -490,18 +493,19 @@ module.exports = (io) => {
               (p) => p.user.toString() === result.winners[0]
             );
 
+            const winnerHand = winnerPlayer.hand || [];
             gameIo.to(gameId).emit("handResult", {
               winners: [
                 {
                   playerId: winnerPlayer.user.toString(),
                   username: winnerPlayer.username,
                   handName: "Winner by fold",
+                  hand: winnerHand,
                 },
               ],
               pot: game.pot,
               message: result.message,
             });
-
             // Prepare for next hand after a delay - UPDATED WITH IMPROVED IMPLEMENTATION
             setTimeout(async () => {
               try {
@@ -598,27 +602,32 @@ module.exports = (io) => {
                     if (socketId) {
                       // Ensure we're sending a properly formatted hand object
                       // IMPORTANT: Force a clean hand array to avoid reference issues
-                      const cleanHand = player.hand.map(card => ({
+                      const cleanHand = player.hand.map((card) => ({
                         suit: card.suit,
                         rank: card.rank,
                         value: card.value,
-                        code: card.code
+                        code: card.code,
                       }));
-                      
-                      console.log(`EXPLICITLY sending new cards to ${player.username}:`, 
-                        cleanHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
-                        
+
+                      console.log(
+                        `EXPLICITLY sending new cards to ${player.username}:`,
+                        cleanHand
+                          .map((c) => `${c.rank} of ${c.suit}`)
+                          .join(", ")
+                      );
+
                       // Send with a distinct event name to ensure client processing
                       gameIo.to(socketId).emit("dealCards", {
                         hand: cleanHand,
                         newHand: true, // Add a flag to indicate this is from a new hand
-                        timestamp: Date.now() // Add timestamp to prevent caching
+                        timestamp: Date.now(), // Add timestamp to prevent caching
                       });
-                      
+
                       // Also send a direct message to ensure the client updates
                       gameIo.to(socketId).emit("forceCardUpdate", {
                         hand: cleanHand,
-                        message: "Your cards have been updated for the new hand"
+                        message:
+                          "Your cards have been updated for the new hand",
                       });
                     }
                   });
@@ -727,9 +736,23 @@ module.exports = (io) => {
               // Process showdown
               const showdownResult = await gameLogic.processShowdown(game);
 
+              const safeWinners = showdownResult.winners.map((winner) => {
+                // Get the player object safely
+                const player = game.players.find(
+                  (p) => p.user && p.user.toString() === winner.playerId
+                );
+
+                // Return formatted winner with hand
+                return {
+                  ...winner,
+                  hand: player && player.hand ? player.hand : [], // Add more null checks
+                };
+              });
+
+              // Send the result with better error handling
               gameIo.to(gameId).emit("handResult", {
-                winners: showdownResult.winners,
-                hands: showdownResult.hands,
+                winners: safeWinners,
+                hands: showdownResult.hands || [], // Add fallback
                 pot: game.pot,
               });
 
@@ -832,27 +855,32 @@ module.exports = (io) => {
                       if (socketId) {
                         // Ensure we're sending a properly formatted hand object
                         // IMPORTANT: Force a clean hand array to avoid reference issues
-                        const cleanHand = player.hand.map(card => ({
+                        const cleanHand = player.hand.map((card) => ({
                           suit: card.suit,
                           rank: card.rank,
                           value: card.value,
-                          code: card.code
+                          code: card.code,
                         }));
-                        
-                        console.log(`EXPLICITLY sending new cards to ${player.username}:`, 
-                          cleanHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
-                          
+
+                        console.log(
+                          `EXPLICITLY sending new cards to ${player.username}:`,
+                          cleanHand
+                            .map((c) => `${c.rank} of ${c.suit}`)
+                            .join(", ")
+                        );
+
                         // Send with a distinct event name to ensure client processing
                         gameIo.to(socketId).emit("dealCards", {
                           hand: cleanHand,
                           newHand: true, // Add a flag to indicate this is from a new hand
-                          timestamp: Date.now() // Add timestamp to prevent caching
+                          timestamp: Date.now(), // Add timestamp to prevent caching
                         });
-                        
+
                         // Also send a direct message to ensure the client updates
                         gameIo.to(socketId).emit("forceCardUpdate", {
                           hand: cleanHand,
-                          message: "Your cards have been updated for the new hand"
+                          message:
+                            "Your cards have been updated for the new hand",
                         });
                       }
                     });

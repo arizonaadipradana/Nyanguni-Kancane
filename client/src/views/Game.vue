@@ -33,6 +33,12 @@
           :currentGame="currentGame" :betAmount="betAmount" :raiseAmount="raiseAmount"
           @updateBetAmount="betAmount = $event" @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction"
           @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
+
+        <ActionTimer :initialTime="actionTimeLimit" :isActive="isYourTurn" @timerComplete="handleTimerComplete"
+          v-if="isYourTurn" />
+
+        <WinnerDisplay :winners="handWinners" :pot="winningPot" :visible="showWinnerDisplay" :formatCard="formatCard"
+          @countdownComplete="handleWinnerDisplayComplete" />
       </div>
 
       <!-- Game chat/log -->
@@ -63,6 +69,8 @@ import GameLog from '@/components/Game/GameLog.vue';
 import GameDebugPanel from '@/components/Game/GameDebugPanel.vue';
 import GameHandlers from '@/components/Game/GameHandlers';
 import { formatCard, getDefaultOptions, addToGameLog } from '@/utils/gameUtils';
+import ActionTimer from '@/components/Game/ActionTimer.vue';
+import WinnerDisplay from '@/components/Game/WinnerDisplay.vue';
 
 export default {
   name: 'Game',
@@ -74,7 +82,9 @@ export default {
     PlayerList,
     PlayerActions,
     GameLog,
-    GameDebugPanel
+    GameDebugPanel,
+    ActionTimer,
+    WinnerDisplay
   },
 
   data() {
@@ -90,8 +100,8 @@ export default {
       showResult: false,
       handResult: null,
       actionTimer: null,
-      actionTimeLimit: 30,
-      actionTimeRemaining: 30,
+      actionTimeLimit: 60,
+      actionTimeRemaining: 60,
       showDebugPanel: false,
       explicitIsCreator: false,
       gameInProgress: false,
@@ -102,6 +112,11 @@ export default {
       handlers: null, // Will store event handlers
       eventHandlers: [], // Track registered handlers for cleanup
       isYourTurn: false,
+      showWinnerDisplay: false,
+      handWinners: [],
+      winningPot: 0,
+      playerHand: [],
+      availableActions: [],
     };
   },
 
@@ -110,8 +125,6 @@ export default {
       'currentUser',
       'currentGame',
       'errorMessage',
-      'playerHand',
-      'availableActions'
     ]),
     isAuthenticated() {
       return !!this.$store.getters.token || !!localStorage.getItem('token');
@@ -197,7 +210,7 @@ export default {
       this.isYourTurn = true;
       this.availableActions = data.options || [];
 
-      // Update store state as well
+      // Update store state as well (if needed)
       this.$store.commit('SET_YOUR_TURN', true);
       this.$store.commit('SET_AVAILABLE_ACTIONS', data.options || []);
     },
@@ -215,6 +228,7 @@ export default {
     endTurn() {
       // Update local state
       this.isYourTurn = false;
+      this.availableActions = [];
 
       // Update store state
       this.$store.commit('SET_YOUR_TURN', false);
@@ -508,23 +522,19 @@ export default {
       }
     },
 
-    startActionTimer(timeLimit = 30) {
+    startActionTimer(timeLimit = 60) {
       this.actionTimeLimit = timeLimit;
-      this.actionTimeRemaining = timeLimit;
 
       // Clear any existing timer
       this.clearActionTimer();
 
-      // Set a new timer that updates every second
+      // Set a new timer
       this.actionTimer = setInterval(() => {
-        this.actionTimeRemaining--;
+        this.actionTimeLimit--;
 
-        if (this.actionTimeRemaining <= 0) {
+        if (this.actionTimeLimit <= 0) {
           this.clearActionTimer();
-
-          // Auto-fold when time runs out
-          this.handleAction('fold');
-          this.addToLog('Time ran out - auto-folding');
+          this.handleTimerComplete();
         }
       }, 1000);
     },
@@ -615,6 +625,20 @@ export default {
 
       // Log for debugging
       console.log("Forced game component update");
+    },
+    handleTimerComplete() {
+      console.log('Timer complete - auto folding');
+      if (this.isYourTurn) {
+        this.handleAction('fold');
+        this.addToLog('Time expired - auto fold');
+      }
+    },
+
+    // Handle when winner display countdown completes
+    handleWinnerDisplayComplete() {
+      console.log('Winner display countdown complete');
+      this.showWinnerDisplay = false;
+      this.handWinners = [];
     },
   },
 

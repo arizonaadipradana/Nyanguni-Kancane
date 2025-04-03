@@ -838,16 +838,27 @@ const gameLogic = {
       }
 
       return {
-        winners: result.winners.map((w) => ({
-          playerId: w.playerId,
-          username: w.username,
-          handName: w.handName,
-        })),
-        hands: result.allHands.map((h) => ({
-          playerId: h.playerId,
-          username: h.username,
-          handName: h.handName,
-        })),
+        winners: result.winners.map(w => {
+          // Safely get the player and their hand
+          const player = this.getPlayerById(game, w.playerId);
+          return {
+            playerId: w.playerId,
+            username: w.username,
+            hand: player ? (player.hand || []) : [], // Add null check and fallback
+            handName: w.handName
+          };
+        }),
+        hands: result.allHands.map(h => {
+          // Check if evaluatedHand exists and has cards
+          const cards = h.evaluatedHand && h.evaluatedHand.cards ? h.evaluatedHand.cards : [];
+          return {
+            playerId: h.playerId,
+            username: h.username,
+            hand: cards,
+            handRank: h.evaluatedHand ? h.evaluatedHand.rank : 0,
+            handName: h.evaluatedHand ? h.evaluatedHand.handName : 'Unknown'
+          };
+        })
       };
     } catch (error) {
       console.error("Error in processShowdown:", error);
