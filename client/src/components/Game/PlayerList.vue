@@ -66,7 +66,8 @@ export default {
   data() {
     return {
       updateKey: 0, // Add an update key to force re-rendering
-      lastHandUpdate: Date.now()
+      lastHandUpdate: Date.now(),
+      currentHandTimestamp: 0,
     };
   },
 
@@ -81,10 +82,17 @@ export default {
 
     // Add a computed property to handle player hand display
     displayPlayerHand() {
-      // This adds reactivity by creating new card objects
+      // Make sure playerHand is an array
+      if (!this.playerHand || !Array.isArray(this.playerHand)) {
+        console.warn('Invalid playerHand in PlayerList component:', this.playerHand);
+        return [];
+      }
+
+      // Add reactivity by creating new card objects with keys that will
+      // trigger Vue's reactivity system
       return this.playerHand.map(card => ({
         ...card,
-        _key: `${card.rank}-${card.suit}-${this.lastHandUpdate}`
+        _key: `${card.rank}-${card.suit}-${this.lastHandUpdate}-${this.updateKey}`
       }));
     }
   },
@@ -92,12 +100,18 @@ export default {
   watch: {
     // Watch playerHand for changes and force updates
     playerHand: {
-      handler(newHand) {
+      handler(newHand, oldHand) {
+        // Only force update if hand has changed meaningfully
         if (newHand && newHand.length > 0) {
-          console.log('PlayerList detected hand change:',
-            newHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
-          this.updateKey++; // Increment to force re-render
-          this.lastHandUpdate = Date.now();
+          const newHandString = JSON.stringify(newHand);
+          const oldHandString = oldHand ? JSON.stringify(oldHand) : '';
+
+          if (newHandString !== oldHandString) {
+            console.log('PlayerList detected hand change:',
+              newHand.map(c => `${c.rank} of ${c.suit}`).join(', '));
+            this.updateKey++; // Increment to force re-render
+            this.lastHandUpdate = Date.now();
+          }
         }
       },
       deep: true
@@ -127,6 +141,19 @@ export default {
       this.updateKey++;
       this.lastHandUpdate = Date.now();
       console.log('PlayerList forced update');
+    },
+    updateForNewHand(timestamp) {
+      if (!timestamp || timestamp <= this.currentHandTimestamp) {
+        return; // Ignore older updates
+      }
+
+      console.log('PlayerList updating for new hand with timestamp:', timestamp);
+      this.currentHandTimestamp = timestamp;
+      this.updateKey += 10; // Use a larger increment to distinguish from regular updates
+      this.lastHandUpdate = Date.now();
+
+      // Force component update
+      this.$forceUpdate();
     }
   }
 };

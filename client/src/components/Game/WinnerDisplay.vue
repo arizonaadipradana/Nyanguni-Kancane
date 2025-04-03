@@ -57,31 +57,18 @@
       <!-- Winners Section -->
       <div class="winner-info" v-if="winners && winners.length > 0">
         <div class="winner-pot">
-          <span v-if="winners.length === 1">
+          <span v-if="winners.length === 1 && pot > 0">
             {{ winners[0].username }} won {{ pot }} chips
           </span>
-          <span v-else>
+          <span v-else-if="winners.length > 1 && pot > 0">
             Split pot: {{winners.map(w => w.username).join(', ')}} each won {{ splitPotAmount(winners[0]) }} chips
+          </span>
+          <span v-else-if="pot <= 0" class="error-message">
+            Error: Invalid pot amount of {{ pot }} chips.
+            Please refresh the game page.
           </span>
         </div>
       </div>
-
-      <!-- Ready Up Section -->
-      <div class="ready-up-section">
-        <p class="ready-message">Please ready up for the next hand</p>
-        <button @click="toggleReady" class="ready-btn" :class="{ 'ready-confirm': isCurrentPlayerReady }">
-          {{ isCurrentPlayerReady ? 'I\'m Ready ✓' : 'Mark as Ready' }}
-        </button>
-        <p v-if="readySummary" class="ready-info">{{ readySummary }}</p>
-
-        <!-- Start Next Hand button for creator -->
-        <div v-if="isCreator && areEnoughPlayersReady" class="start-next-hand">
-          <button @click="emitStartNextHand" class="start-next-hand-btn">
-            Start Next Hand
-          </button>
-        </div>
-      </div>
-
       <!-- Close Button -->
       <button @click="closeWinnerDisplay" class="close-display-btn">Close</button>
     </div>
@@ -637,6 +624,15 @@ export default {
 .community-card[data-suit="hearts"],
 .community-card[data-suit="diamonds"] {
   color: red;
+}
+
+.error-message {
+  color: #ff6b6b;
+  font-weight: bold;
+  background-color: rgba(255, 0, 0, 0.1);
+  padding: 5px 10px;
+  border-radius: 4px;
+  margin-top: 10px;
 }
 
 @keyframes pulse {

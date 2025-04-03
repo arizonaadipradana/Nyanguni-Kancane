@@ -26,7 +26,7 @@
         <CommunityCards :communityCards="currentGame.communityCards" :formatCard="formatCard" />
 
         <!-- Players -->
-        <PlayerList :players="currentGame.players" :currentUser="currentUser" :currentTurn="currentGame.currentTurn"
+        <PlayerList ref="playerList" :players="currentGame.players" :currentUser="currentUser" :currentTurn="currentGame.currentTurn"
           :playerHand="playerHand" :formatCard="formatCard" />
 
         <!-- Player actions -->
@@ -126,6 +126,8 @@ export default {
       allPlayersCards: [],
       communityCards: [],
       isFoldWin: false,
+      currentHandTimestamp: 0,
+      cardRefreshCounter: 0,
     };
   },
 
@@ -764,8 +766,38 @@ export default {
       this.showWinnerDisplay = false;
       this.handWinners = [];
 
-      // Request a game state update to ensure UI is updated
+      // Request a game state update to ensure UI is up to date
       this.requestStateUpdate();
+
+      // After short delay, try to fetch user data to update balances
+      setTimeout(() => {
+        this.$store.dispatch('fetchUserData')
+          .then(() => console.log("User data refreshed after hand"))
+          .catch(err => console.error("Failed to refresh user data:", err));
+      }, 500);
+    },
+
+    //A method to handle game reset
+    resetGameState() {
+      console.log('Resetting game state for new hand');
+      // Reset game-related state
+      this.playerHand = [];
+      this.communityCards = [];
+      this.isYourTurn = false;
+      this.availableActions = [];
+      this.handWinners = [];
+      this.showWinnerDisplay = false;
+      this.cardRefreshCounter = 0;
+
+      // Force UI update
+      this.$forceUpdate();
+
+      // Update child components
+      this.$nextTick(() => {
+        if (this.$refs.playerList && typeof this.$refs.playerList.forceUpdate === 'function') {
+          this.$refs.playerList.forceUpdate();
+        }
+      });
     },
 
     startNextHand() {
@@ -777,11 +809,26 @@ export default {
       console.log('Starting next hand...');
       this.addToLog('Starting next hand...');
 
-      // Tell server to start the next hand with a new socket event
-      SocketService.gameSocket?.emit('startNextHand', {
-        gameId: this.gameId,
-        userId: this.currentUser.id
-      });
+      // Reset game state
+      this.resetGameState();
+
+      // Refresh user data first to ensure we have accurate balances
+      this.$store.dispatch('fetchUserData')
+        .then(() => {
+          // Then tell server to start the next hand
+          SocketService.gameSocket?.emit('startNextHand', {
+            gameId: this.gameId,
+            userId: this.currentUser.id
+          });
+        })
+        .catch(err => {
+          console.error("Failed to refresh user data before next hand:", err);
+          // Still try to start the hand even if user data refresh fails
+          SocketService.gameSocket?.emit('startNextHand', {
+            gameId: this.gameId,
+            userId: this.currentUser.id
+          });
+        });
     },
     handleGameStateChange(gameState) {
       // If game state changes from active to waiting, make sure to end any active turns
@@ -802,6 +849,110 @@ export default {
 
       // Clear any error message after successful game state update
       this.SET_ERROR_MESSAGE('');
+    },
+    handleDealCards(data) {
+      console.log("Received cards:", data);
+
+      // Check if this is a new hand signal with timestamp
+      if (data.newHand && data.timestamp) {
+        console.log("Received new hand signal with timestamp:", data.timestamp);
+
+        // Reset game state for new hand
+        this.resetGameState();
+
+        // Update the timestamp
+        this.currentHandTimestamp = data.timestamp;
+
+        // Small delay to ensure state reset before setting new cards
+        setTimeout(() => {
+          // Apply the new cards
+          this.playerHand = data.hand || [];
+          this.addToLog("You have been dealt new cards");
+
+          // Force UI update
+          this.$forceUpdate();
+
+          // Also update store state
+          this.$store.commit('SET_PLAYER_HAND', data.hand || []);
+
+          // Force update child components
+          this.$nextTick(() => {
+            if (this.$refs.playerList && typeof this.$refs.playerList.forceUpdate === 'function') {
+              this.$refs.playerList.updateForNewHand(data.timestamp);
+            }
+          });
+
+          // Request a state update to ensure UI is in sync
+          setTimeout(() => {
+            this.requestStateUpdate();
+          }, 500);
+        }, 100);
+
+        return;
+      }
+
+      // For regular card deals or reconnects
+      if (!data || !data.hand || !Array.isArray(data.hand)) {
+        console.warn("Received invalid card data:", data);
+        return;
+      }
+
+      // Only update if this doesn't have a timestamp or the timestamp is newer than our current hand
+      if (!this.currentHandTimestamp ||
+        !data.timestamp ||
+        data.timestamp >= this.currentHandTimestamp) {
+
+        console.log("Updating cards with data:", data.hand.map(c => `${c.rank} of ${c.suit}`).join(", "));
+
+        // Small delay to ensure state reset before setting new cards
+        setTimeout(() => {
+          // Apply the new cards - create a fresh copy to ensure reactivity
+          this.playerHand = [...data.hand];
+
+          if (!data.newHand) {
+            this.addToLog("You have been dealt cards");
+          }
+
+          // Force UI update
+          this.$forceUpdate();
+
+          // Update store state
+          this.$store.commit('SET_PLAYER_HAND', data.hand);
+
+          // Also update the timestamp if provided
+          if (data.timestamp) {
+            this.currentHandTimestamp = data.timestamp;
+          }
+
+          // Mark game as initialized when we get cards
+          this.gameInitialized = true;
+          this.gameInProgress = true;
+
+          // Clear any lingering error messages
+          this.clearErrorMessage();
+        }, 100);
+      } else {
+        console.log("Ignoring older card data with timestamp:", data.timestamp);
+      }
+    },
+    handleGameStatusChange(statusData) {
+      console.log('Game status changed:', statusData);
+
+      // If game status is changing to waiting, reset for a new hand
+      if (statusData.status === 'waiting') {
+        console.log('Game status changed to waiting, preparing for new hand');
+
+        // End any active turns
+        if (this.isYourTurn) {
+          this.endTurn();
+        }
+
+        // Reset game state
+        this.resetGameState();
+
+        // Clear current hand timestamp to accept new cards
+        this.currentHandTimestamp = 0;
+      }
     },
   },
 
@@ -905,12 +1056,7 @@ export default {
 
     // Handle status changes
     const gameStatusChangeHandler = (statusData) => {
-      console.log('Game status changed:', statusData);
-
-      // If game status is changing to waiting, end any active turns
-      if (statusData.status === 'waiting' && this.isYourTurn) {
-        this.endTurn();
-      }
+      this.handleGameStatusChange(statusData);
     };
     SocketService.on('gameStatusChange', gameStatusChangeHandler);
     this.eventHandlers.push({ event: 'gameStatusChange', handler: gameStatusChangeHandler });
@@ -919,6 +1065,16 @@ export default {
       SocketService.on('handResult', this.handlers.handleHandResult);
       this.eventHandlers.push({ event: 'handResult', handler: this.handlers.handleHandResult });
     }
+
+    // A fresh card handler for new hands
+    const newHandCardsHandler = (data) => {
+      if (data && data.newHand && data.timestamp) {
+        console.log('Received new hand cards event');
+        this.handleDealCards(data);
+      }
+    };
+    SocketService.on('newHandCards', newHandCardsHandler);
+    this.eventHandlers.push({ event: 'newHandCards', handler: newHandCardsHandler });
   },
 
   beforeDestroy() {
