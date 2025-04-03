@@ -1,9 +1,11 @@
 <!-- client/src/components/Game/PlayerActions.vue -->
+<!-- Update the template to check game status -->
 <template>
   <div class="player-actions">
     <h3>Your Turn</h3>
 
-    <div class="action-buttons">
+    <!-- Only show actions if game is active and it's the player's turn -->
+    <div v-if="isGameActive && isYourTurn" class="action-buttons">
       <button 
         v-if="availableActions.includes('fold')" 
         @click="$emit('handleAction', 'fold')" 
@@ -74,6 +76,14 @@
         </button>
       </div>
     </div>
+    
+    <!-- Message when it's not the player's turn or game is not active -->
+    <div v-else-if="!isGameActive" class="waiting-message">
+      Waiting for next hand to start...
+    </div>
+    <div v-else class="waiting-message">
+      Waiting for your turn...
+    </div>
   </div>
 </template>
 
@@ -97,6 +107,10 @@ export default {
     raiseAmount: {
       type: Number,
       required: true
+    },
+    isYourTurn: {
+      type: Boolean,
+      default: false
     }
   },
   
@@ -111,6 +125,10 @@ export default {
     formattedCallAmount() {
       const amount = this.getCallAmount();
       return isNaN(amount) ? 0 : amount;
+    },
+    
+    isGameActive() {
+      return this.currentGame && this.currentGame.status === 'active';
     }
   },
   
@@ -163,11 +181,15 @@ export default {
     
     // UI Events
     handleBet() {
+      if (!this.isGameActive || !this.isYourTurn) return;
+      
       this.validateBetAmount();
       this.$emit('handleAction', 'bet', this.internalBetAmount);
     },
     
     handleRaise() {
+      if (!this.isGameActive || !this.isYourTurn) return;
+      
       this.validateRaiseAmount();
       this.$emit('handleAction', 'raise', this.internalRaiseAmount);
     },
@@ -276,6 +298,17 @@ export default {
         }
       },
       immediate: true
+    },
+    
+    // Watch for changes in game status
+    'currentGame.status': {
+      handler(newStatus) {
+        if (newStatus !== 'active' && this.isYourTurn) {
+          // If game status changes and it was player's turn, emit end turn
+          this.$emit('endTurn');
+        }
+      },
+      immediate: true
     }
   }
 };
@@ -301,6 +334,12 @@ export default {
   justify-content: center;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.waiting-message {
+  color: #aaa;
+  font-style: italic;
+  padding: 15px;
 }
 
 .bet-action {

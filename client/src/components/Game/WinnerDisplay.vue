@@ -35,14 +35,31 @@
         </div>
       </div>
       
-      <div class="countdown">
-        Next hand in {{ timeRemaining }} seconds
+      <!-- Ready Up Section instead of countdown -->
+      <div class="ready-up-section">
+        <p class="ready-message">Please ready up for the next hand</p>
+        <button @click="toggleReady" class="ready-btn" :class="{ 'ready-confirm': isCurrentPlayerReady }">
+          {{ isCurrentPlayerReady ? 'I\'m Ready ✓' : 'Mark as Ready' }}
+        </button>
+        <p v-if="readySummary" class="ready-info">{{ readySummary }}</p>
+        
+        <!-- Start Next Hand button for creator -->
+        <div v-if="isCreator && areEnoughPlayersReady" class="start-next-hand">
+          <button @click="emitStartNextHand" class="start-next-hand-btn">
+            Start Next Hand
+          </button>
+        </div>
       </div>
+      
+      <!-- Close Button -->
+      <button @click="closeWinnerDisplay" class="close-display-btn">Close</button>
     </div>
   </div>
 </template>
 
 <script>
+import SocketService from '@/services/SocketService';
+
 export default {
   name: 'WinnerDisplay',
   
@@ -62,34 +79,85 @@ export default {
     formatCard: {
       type: Function,
       required: true
+    },
+    currentGame: {
+      type: Object,
+      default: null
+    },
+    currentUser: {
+      type: Object,
+      default: null
+    },
+    gameId: {
+      type: String,
+      default: ''
+    },
+    isCreator: {
+      type: Boolean,
+      default: false
     }
   },
   
-  data() {
-    return {
-      timeRemaining: 15,
-      countdownInterval: null
-    };
+  computed: {
+    /**
+     * Check if the current player is marked as ready
+     */
+    isCurrentPlayerReady() {
+      if (!this.currentUser || !this.currentGame || !this.currentGame.players) {
+        return false;
+      }
+      
+      const currentPlayer = this.currentGame.players.find(
+        p => p.id === this.currentUser.id
+      );
+      
+      return currentPlayer ? currentPlayer.isReady : false;
+    },
+    
+    /**
+     * Get a summary of player readiness
+     */
+    readySummary() {
+      if (!this.currentGame || !this.currentGame.players) {
+        return 'Waiting for players...';
+      }
+      
+      const readyCount = this.currentGame.players.filter(p => p.isReady).length;
+      const totalPlayers = this.currentGame.players.length;
+      
+      if (readyCount === 0) {
+        return 'No players are ready yet';
+      } else if (readyCount === totalPlayers && totalPlayers >= 2) {
+        return 'All players are ready!';
+      } else {
+        return `${readyCount} of ${totalPlayers} players ready`;
+      }
+    },
+    
+    /**
+     * Check if enough players are ready to start next hand
+     */
+    areEnoughPlayersReady() {
+      if (!this.currentGame || !this.currentGame.players) {
+        return false;
+      }
+      
+      const readyPlayers = this.currentGame.players.filter(p => p.isReady);
+      return readyPlayers.length >= 2;
+    }
   },
   
   watch: {
-    visible(newValue) {
-      if (newValue) {
-        this.startCountdown();
-      } else {
-        this.stopCountdown();
-      }
+    // Watch for changes in the current game to update readiness status
+    currentGame: {
+      handler() {
+        // When game updates, check if we should enable start next hand button
+        if (this.isCreator && this.areEnoughPlayersReady) {
+          console.log('Enough players are ready for next hand');
+        }
+      },
+      deep: true
     }
-  },
-  
-  mounted() {
-    if (this.visible) {
-      this.startCountdown();
-    }
-  },
-  
-  beforeDestroy() {
-    this.stopCountdown();
   },
   
   methods: {
@@ -107,28 +175,63 @@ export default {
       return Math.floor(this.pot / this.winners.length);
     },
     
-    startCountdown() {
-      this.stopCountdown(); // Clear any existing countdown
-      this.timeRemaining = 15;
-      
-      this.countdownInterval = setInterval(() => {
-        if (this.timeRemaining > 0) {
-          this.timeRemaining--;
-        } else {
-          this.stopCountdown();
-          this.$emit('countdownComplete');
-        }
-      }, 1000);
+    // Close the winner display
+    closeWinnerDisplay() {
+      this.$emit('close');
     },
     
-    stopCountdown() {
-      if (this.countdownInterval) {
-        clearInterval(this.countdownInterval);
-        this.countdownInterval = null;
+    /**
+     * Toggle current player's ready status
+     */
+    toggleReady() {
+      if (!this.currentUser || !this.gameId) {
+        console.error('Cannot toggle ready: missing user or game data');
+        return;
       }
+      
+      // Safety check for socket connection
+      if (!SocketService.isSocketConnected()) {
+        console.warn('Socket not connected, trying to reconnect...');
+        SocketService.init().then(() => {
+          this.toggleReady(); // Try again after connecting
+        });
+        return;
+      }
+      
+      // Send ready status update via socket
+      SocketService.gameSocket?.emit('playerReady', {
+        gameId: this.gameId,
+        userId: this.currentUser.id,
+        isReady: !this.isCurrentPlayerReady
+      });
+      
+      // Add to log
+      this.$emit('addToLog', `You marked yourself as ${!this.isCurrentPlayerReady ? 'ready' : 'not ready'}`);
+    },
+    
+    /**
+     * Emit event to start the next hand (for creator only)
+     */
+    emitStartNextHand() {
+      if (!this.isCreator) {
+        console.warn('Only the creator can start the next hand');
+        return;
+      }
+      
+      if (!this.areEnoughPlayersReady) {
+        this.$emit('addToLog', 'Not enough players are ready yet');
+        return;
+      }
+      
+      console.log('Emitting startNextHand event');
+      this.$emit('startNextHand');
+      this.$emit('addToLog', 'Starting next hand...');
+      
+      // Close the winner display after starting next hand
+      this.closeWinnerDisplay();
     }
   }
-}
+};
 </script>
 
 <style scoped>
@@ -234,10 +337,99 @@ export default {
   color: #f1c40f;
 }
 
-.countdown {
-  margin-top: 20px;
+.ready-up-section {
+  margin-top: 30px;
+  padding: 15px;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.ready-message {
   font-size: 18px;
-  color: #f39c12;
+  color: white;
+  margin-bottom: 15px;
+}
+
+.ready-btn {
+  background-color: #555;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 10px 20px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.ready-btn.ready-confirm {
+  background-color: #4caf50;
+}
+
+.ready-btn:hover {
+  background-color: #666;
+}
+
+.ready-btn.ready-confirm:hover {
+  background-color: #3d8b40;
+}
+
+.ready-info {
+  margin-top: 15px;
+  font-size: 16px;
+  color: #ccc;
+}
+
+.start-next-hand {
+  margin-top: 20px;
+}
+
+.start-next-hand-btn {
+  background-color: #f39c12;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 12px 24px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.3s;
+  animation: pulse 2s infinite;
+}
+
+.start-next-hand-btn:hover {
+  background-color: #e67e22;
+}
+
+.close-display-btn {
+  margin-top: 20px;
+  background-color: #333;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.close-display-btn:hover {
+  background-color: #444;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(243, 156, 18, 0.7);
+  }
+  
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 10px rgba(243, 156, 18, 0);
+  }
+  
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(243, 156, 18, 0);
+  }
 }
 
 @keyframes scale-in {

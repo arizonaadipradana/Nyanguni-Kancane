@@ -780,7 +780,7 @@ const gameLogic = {
       const activePlayers = game.players.filter(
         (p) => p.isActive && !p.hasFolded
       );
-  
+
       // Prepare hands for evaluation
       const playerHands = activePlayers.map((player) => ({
         playerId: player.user.toString(),
@@ -788,15 +788,19 @@ const gameLogic = {
         holeCards: player.hand,
         communityCards: game.communityCards,
       }));
-  
+
       // Determine winner(s)
       const result = handEvaluator.determineWinners(playerHands);
-  
+
       // Log detailed results for debugging
       console.log("Showdown results determined:");
-      console.log(`- Winners: ${result.winners.map(w => w.username).join(', ')}`);
-      console.log(`- Hand types: ${result.winners.map(w => w.handName).join(', ')}`);
-      
+      console.log(
+        `- Winners: ${result.winners.map((w) => w.username).join(", ")}`
+      );
+      console.log(
+        `- Hand types: ${result.winners.map((w) => w.handName).join(", ")}`
+      );
+
       // Store hand results in game history
       game.handResults.push({
         winners: result.winners.map((w) => w.playerId),
@@ -809,14 +813,14 @@ const gameLogic = {
         communityCards: game.communityCards,
         timestamp: Date.now(),
       });
-  
+
       // Award pot to winner(s) - this handles database updates too
       const winnerPlayers = result.winners.map((w) =>
         this.getPlayerById(game, w.playerId)
       );
-  
+
       await this.awardPot(game, winnerPlayers);
-  
+
       // Also update all other players' balances to the database
       for (const player of game.players) {
         // Skip winners as they've already been updated
@@ -827,7 +831,7 @@ const gameLogic = {
         ) {
           continue;
         }
-  
+
         try {
           // Update the loser's balance in the database
           await User.findByIdAndUpdate(
@@ -842,27 +846,27 @@ const gameLogic = {
           );
         }
       }
-  
+
       // Prepare detailed winner data with proper error handling
-      const safeWinners = result.winners.map(w => {
+      const safeWinners = result.winners.map((w) => {
         const player = this.getPlayerById(game, w.playerId);
         return {
           playerId: w.playerId,
           username: w.username || "Unknown Player",
           hand: player && Array.isArray(player.hand) ? player.hand : [],
-          handName: w.handName || "Unknown Hand"
+          handName: w.handName || "Unknown Hand",
         };
       });
-  
+
       // Return processed result
       return {
         winners: safeWinners,
-        hands: result.allHands.map(h => ({
+        hands: result.allHands.map((h) => ({
           playerId: h.playerId,
           username: h.username || "Unknown Player",
           hand: h.hand || [],
-          handName: h.handName || "Unknown Hand"
-        }))
+          handName: h.handName || "Unknown Hand",
+        })),
       };
     } catch (error) {
       console.error("Error in processShowdown:", error);
@@ -905,11 +909,11 @@ const gameLogic = {
       game.pot = 0;
       game.currentBet = 0;
       game.communityCards = [];
-
+  
       // IMPORTANT FIX: Create a completely new shuffled deck for the next hand
       const cardDeck = require("./cardDeck");
       game.deck = cardDeck.createDeck(); // This creates a fresh, shuffled deck
-
+  
       // Reset player states but keep their total chips
       game.players.forEach((player) => {
         player.hand = [];
@@ -917,8 +921,9 @@ const gameLogic = {
         player.hasFolded = false;
         player.hasActed = false;
         player.isAllIn = false;
+        player.isReady = false; // Reset ready status for next hand
       });
-
+  
       // Check which players have zero chips
       const playersToRemove = [];
       game.players = game.players.filter((player, index) => {
@@ -929,7 +934,7 @@ const gameLogic = {
         }
         return true;
       });
-
+  
       // Check if there are enough players to continue
       if (game.players.filter((p) => p.isActive).length < 2) {
         game.status = "completed";
@@ -939,14 +944,18 @@ const gameLogic = {
           timestamp: Date.now(),
         });
       } else {
-        // Continue with next hand
+        // Set status to 'waiting' to require players to ready up again
+        game.status = "waiting";
+        
+        // Add to action history
         game.actionHistory.push({
           player: "System",
           action: "nextHand",
+          message: "Waiting for players to ready up for next hand",
           timestamp: Date.now(),
         });
       }
-
+  
       // Use findByIdAndUpdate instead of direct save to avoid versioning conflicts
       try {
         // Create a clean object for update to avoid mongoose versioning issues
@@ -960,58 +969,64 @@ const gameLogic = {
           actionHistory: game.actionHistory,
           deck: game.deck, // Include the fresh deck in the update
         };
-
+  
         // Update the game in the database using findByIdAndUpdate
         const updatedGame = await Game.findByIdAndUpdate(
           game._id,
           { $set: updateData },
           { new: true, runValidators: true }
         );
-
+  
         if (!updatedGame) {
           throw new Error(`Game with ID ${game._id} not found during update`);
         }
-
+  
         console.log(
           `Game ${updatedGame.gameId} prepared for next hand with a fresh deck of ${updatedGame.deck.length} cards`
         );
-
+        console.log(`Game status set to ${updatedGame.status} - waiting for players to ready up`);
+  
         // Log deck stats for debugging
         if (updatedGame.deck) {
           const suitCounts = {};
           const rankCounts = {};
-
+  
           updatedGame.deck.forEach((card) => {
             suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
             rankCounts[card.rank] = (rankCounts[card.rank] || 0) + 1;
           });
-
+  
           console.log("Deck statistics:", {
             deckSize: updatedGame.deck.length,
             suits: suitCounts,
             ranks: rankCounts,
           });
         }
-
+  
         return updatedGame;
       } catch (updateError) {
         console.error("Error updating game for next hand:", updateError);
-
+  
         // Fallback: Try to fetch a fresh copy of the game
         const freshGame = await Game.findById(game._id);
         if (!freshGame) {
           throw new Error(`Could not find game with ID ${game._id}`);
         }
-
+  
         // Apply our changes to the fresh copy
         freshGame.bettingRound = "preflop";
         freshGame.pot = 0;
         freshGame.currentBet = 0;
         freshGame.communityCards = [];
         freshGame.players = game.players;
-        freshGame.status = game.status;
+        freshGame.status = "waiting"; // Set status to waiting
         freshGame.deck = cardDeck.createDeck(); // Create a fresh deck here too
-
+  
+        // Reset ready status in the fresh copy
+        freshGame.players.forEach(player => {
+          player.isReady = false;
+        });
+  
         // Add our history entry to the fresh copy
         if (game.status === "completed") {
           freshGame.actionHistory.push({
@@ -1023,10 +1038,11 @@ const gameLogic = {
           freshGame.actionHistory.push({
             player: "System",
             action: "nextHand",
+            message: "Waiting for players to ready up for next hand",
             timestamp: Date.now(),
           });
         }
-
+  
         // Save the fresh copy
         await freshGame.save();
         console.log(
@@ -1155,8 +1171,16 @@ const gameLogic = {
         isAllIn: player.isAllIn,
         isActive: player.isActive,
         position: player.position,
+        isReady: player.isReady,
       })),
       actionHistory: game.actionHistory.slice(-10), // Last 10 actions
+      // Add readiness summary for easier client-side access
+      readySummary: {
+        readyCount: game.players.filter((p) => p.isReady).length,
+        totalPlayers: game.players.length,
+        allReady:
+          game.players.length > 0 && game.players.every((p) => p.isReady),
+      },
     };
   },
 
@@ -1256,13 +1280,6 @@ const gameLogic = {
 
     return true;
   },
-
-  /**
-   * Force a completely new deck for a game
-   * This helps solve issues with Mongoose serialization and reference problems
-   * @param {Object} game - The game document
-   * @returns {Array} The new deck
-   */
 };
 
 module.exports = gameLogic;

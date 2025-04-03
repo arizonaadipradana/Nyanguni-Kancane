@@ -6,6 +6,17 @@
       <p>Game ID: <strong>{{ gameId }}</strong></p>
       <p>Players: {{ currentGame.players.length }}/8</p>
       
+      <!-- Player ready component -->
+      <PlayerReadyComponent 
+        :currentGame="currentGame"
+        :currentUser="currentUser"
+        :gameId="gameId"
+        :isCreator="isCreator"
+        @addToLog="addToLog"
+        @playersReady="onPlayersReady"
+        @startGame="startGame"
+      />
+      
       <!-- Prominent game creator section -->
       <div class="creator-info" v-if="isCreator">
         <div class="creator-badge">
@@ -14,7 +25,8 @@
         
         <div class="player-count-info">
           <p v-if="currentGame.players.length >= 2" class="ready-message">
-            ✅ You have enough players to start the game!
+            <span v-if="enoughPlayersReady">✅ Enough players are ready to start the game!</span>
+            <span v-else>⏳ Waiting for players to mark themselves as ready...</span>
           </p>
           <p v-else class="waiting-message">
             ⏳ Waiting for more players to join (need at least 2)
@@ -22,7 +34,7 @@
         </div>
         
         <div v-if="currentGame.players.length >= 2" class="start-game-container">
-          <button @click="startGame" class="start-btn" :disabled="isStarting">
+          <button @click="startGame" class="start-btn" :disabled="isStarting || !enoughPlayersReady">
             {{ isStarting ? 'Starting...' : 'START GAME' }}
           </button>
         </div>
@@ -40,7 +52,9 @@
       </div>
     </div>
 
+    <!-- Rest of the component remains the same -->
     <div v-else-if="currentGame.status === 'active'" class="active-status">
+      <!-- Active game content (unchanged) -->
       <p>Game in progress</p>
       <div class="game-info">
         <div class="info-item">
@@ -93,24 +107,43 @@
           <span class="debug-value">{{ currentGame.players.length }}</span>
         </div>
         <div class="debug-item">
+          <span class="debug-label">Ready Players:</span>
+          <span class="debug-value">{{ readyPlayersCount }}</span>
+        </div>
+        <div class="debug-item">
+          <span class="debug-label">Enough Ready:</span>
+          <span class="debug-value">{{ enoughPlayersReady }}</span>
+        </div>
+        <div class="debug-item">
           <span class="debug-label">Status:</span>
           <span class="debug-value">{{ currentGame.status }}</span>
         </div>
         <button @click="forceStartGame" class="debug-btn">Force Start Game</button>
         <button @click="requestStateUpdate" class="debug-btn">Request Game Update</button>
+        <button @click="checkReadyPlayers" class="debug-btn">Check Ready Players</button>
       </div>
     </div>
   </div>
 </template>
 
 <script>
+import PlayerReadyComponent from './PlayerReadyComponent.vue';
+
 export default {
   name: 'GameStatus',
+  
+  components: {
+    PlayerReadyComponent
+  },
   
   props: {
     currentGame: {
       type: Object,
       required: true
+    },
+    currentUser: {
+      type: Object,
+      default: null
     },
     gameId: {
       type: String,
@@ -133,8 +166,31 @@ export default {
   data() {
     return {
       debugVisible: false,
-      isDevelopment: process.env.NODE_ENV !== 'production'
+      isDevelopment: process.env.NODE_ENV !== 'production',
+      enoughPlayersReady: false
     };
+  },
+  
+  computed: {
+    readyPlayersCount() {
+      if (!this.currentGame || !this.currentGame.players) return 0;
+      return this.currentGame.players.filter(p => p.isReady).length;
+    }
+  },
+  
+  watch: {
+    // This watcher ensures that enoughPlayersReady gets updated when the game state changes
+    currentGame: {
+      handler(newGame) {
+        this.checkReadyPlayers();
+      },
+      deep: true
+    }
+  },
+  
+  mounted() {
+    // Check ready players on component mount
+    this.checkReadyPlayers();
   },
   
   methods: {
@@ -166,6 +222,11 @@ export default {
     
     startGame() {
       console.log("Start game button clicked");
+      if (!this.enoughPlayersReady) {
+        console.warn("Cannot start game - not enough players are ready");
+        this.addToLog("Cannot start game - need at least 2 ready players");
+        return;
+      }
       this.$emit('startGame');
     },
     
@@ -184,6 +245,33 @@ export default {
     
     returnToLobby() {
       this.$router.push('/lobby');
+    },
+    
+    onPlayersReady(isReady) {
+      this.enoughPlayersReady = isReady;
+      console.log("Players ready status updated:", isReady);
+    },
+    
+    addToLog(message) {
+      this.$emit('addToLog', message);
+    },
+    
+    checkReadyPlayers() {
+      if (!this.currentGame || !this.currentGame.players) {
+        this.enoughPlayersReady = false;
+        return;
+      }
+      
+      const readyPlayers = this.currentGame.players.filter(p => p.isReady);
+      const enoughReady = readyPlayers.length >= 2;
+      
+      console.log(`Ready players check: ${readyPlayers.length} ready, enough: ${enoughReady}`);
+      
+      // Update the internal state
+      this.enoughPlayersReady = enoughReady;
+      
+      // Also emit the event for parent components
+      this.$emit('playersReady', enoughReady);
     }
   }
 };
@@ -302,6 +390,12 @@ export default {
 }
 
 .start-btn.disabled {
+  background-color: #555;
+  cursor: not-allowed;
+  animation: none;
+}
+
+.start-btn:disabled {
   background-color: #555;
   cursor: not-allowed;
   animation: none;

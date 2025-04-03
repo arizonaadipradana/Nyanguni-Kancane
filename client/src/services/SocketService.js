@@ -695,6 +695,33 @@ class SocketService {
 
     return intervalId;
   }
+  /**
+   * Set player ready status
+   * @param {string} gameId - Game ID
+   * @param {string} userId - User ID
+   * @param {boolean} isReady - Ready status
+   */
+  setPlayerReady(gameId, userId, isReady) {
+    if (!this.gameSocket || !this.isConnected) {
+      console.warn("Cannot set player status: socket not connected");
+      return;
+    }
+
+    if (!gameId || !userId) {
+      console.warn("Cannot set player status: missing required parameters");
+      return;
+    }
+
+    console.log(
+      `Setting player ${userId} ready status to ${isReady} for game ${gameId}`
+    );
+
+    this.gameSocket.emit("playerReady", {
+      gameId,
+      userId,
+      isReady,
+    });
+  }
 }
 
 // Create and export singleton instance

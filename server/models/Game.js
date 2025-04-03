@@ -62,6 +62,10 @@ const PlayerSchema = new Schema({
   },
   position: {
     type: Number // Player's position at the table
+  },
+  isReady: {
+    type: Boolean,
+    default: false // New field to track if player is ready
   }
 });
 

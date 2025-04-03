@@ -13,10 +13,11 @@
 
     <div v-else class="game-area">
       <div class="game-status-wrapper">
-        <GameStatus :currentGame="currentGame" :gameId="gameId" :isCreator="isCreator" :isStarting="isStarting"
-          :gameInitialized="gameInitialized" :key="currentGame ? currentGame.status + '-' + gameInitialized : 'loading'"
-          @startGame="handleStartGame" @getCurrentPlayerName="getCurrentPlayerName"
-          @requestInitialization="requestInitialization" @requestStateUpdate="requestStateUpdate" />
+        <GameStatus :currentGame="currentGame" :currentUser="currentUser" :gameId="gameId" :isCreator="isCreator"
+          :isStarting="isStarting" :gameInitialized="gameInitialized"
+          :key="currentGame ? currentGame.status + '-' + gameInitialized : 'loading'" @startGame="handleStartGame"
+          @getCurrentPlayerName="getCurrentPlayerName" @requestInitialization="requestInitialization"
+          @requestStateUpdate="requestStateUpdate" @addToLog="addToLog" />
       </div>
 
       <!-- Game table -->
@@ -30,15 +31,26 @@
 
         <!-- Player actions -->
         <PlayerActions v-if="isYourTurn || shouldShowActions()" :availableActions="availableActions"
-          :currentGame="currentGame" :betAmount="betAmount" :raiseAmount="raiseAmount"
+          :currentGame="currentGame" :betAmount="betAmount" :raiseAmount="raiseAmount" :isYourTurn="isYourTurn"
           @updateBetAmount="betAmount = $event" @updateRaiseAmount="raiseAmount = $event" @handleAction="handleAction"
-          @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
+          @endTurn="endTurn" @getPlayerChipsInPot="getPlayerChipsInPot" @getCurrentPlayer="getCurrentPlayer" />
 
-        <ActionTimer :initialTime="actionTimeLimit" :isActive="isYourTurn" @timerComplete="handleTimerComplete"
-          v-if="isYourTurn" />
+        <ActionTimer :initialTime="actionTimeLimit" :isActive="isYourTurn" :currentGame="currentGame"
+          @timerComplete="handleTimerComplete" v-if="isYourTurn" />
 
-        <WinnerDisplay :winners="handWinners" :pot="winningPot" :visible="showWinnerDisplay" :formatCard="formatCard"
-          @countdownComplete="handleWinnerDisplayComplete" />
+          <WinnerDisplay 
+  :winners="handWinners" 
+  :pot="winningPot" 
+  :visible="showWinnerDisplay" 
+  :formatCard="formatCard"
+  :currentGame="currentGame"
+  :currentUser="currentUser"
+  :gameId="gameId"
+  :isCreator="isCreator"
+  @close="handleWinnerDisplayClose"
+  @addToLog="addToLog"
+  @startNextHand="startNextHand"
+/>
       </div>
 
       <!-- Game chat/log -->
@@ -71,6 +83,7 @@ import GameHandlers from '@/components/Game/GameHandlers';
 import { formatCard, getDefaultOptions, addToGameLog } from '@/utils/gameUtils';
 import ActionTimer from '@/components/Game/ActionTimer.vue';
 import WinnerDisplay from '@/components/Game/WinnerDisplay.vue';
+import PlayerReadyComponent from '@/components/Game/PlayerReadyComponent.vue';
 
 export default {
   name: 'Game',
@@ -84,7 +97,8 @@ export default {
     GameLog,
     GameDebugPanel,
     ActionTimer,
-    WinnerDisplay
+    WinnerDisplay,
+    PlayerReadyComponent,
   },
 
   data() {
@@ -500,6 +514,29 @@ export default {
           }
         });
 
+        // Register handler for player ready updates
+        const playerReadyUpdateHandler = (data) => {
+          console.log('Player ready update received:', data);
+          // Game state will be updated through gameUpdate event
+          // Just log the event
+          const message = `${data.username} is ${data.isReady ? 'ready' : 'not ready'}`;
+          this.addToLog(message);
+        };
+
+        // Add handler to track list
+        SocketService.on('playerReadyUpdate', playerReadyUpdateHandler);
+        this.eventHandlers.push({ event: 'playerReadyUpdate', handler: playerReadyUpdateHandler });
+
+        // Handle all players ready event
+        const allPlayersReadyHandler = (data) => {
+          console.log('All players ready:', data);
+          this.addToLog(`All players are ready (${data.readyCount}/${data.totalPlayers})!`);
+        };
+
+        // Add handler to track list
+        SocketService.on('allPlayersReady', allPlayersReadyHandler);
+        this.eventHandlers.push({ event: 'allPlayersReady', handler: allPlayersReadyHandler });
+
         // Add a connect listener to update isConnected when the socket connects
         SocketService.gameSocket.on('connect', () => {
           console.log('Socket connected event received');
@@ -580,26 +617,13 @@ export default {
     },
 
     shouldShowActions() {
-      // If game isn't active, don't show actions
+      // Don't show actions if game isn't active
       if (!this.currentGame || this.currentGame.status !== 'active') {
         return false;
       }
 
-      // Don't show actions if it's explicitly not your turn
-      if (!this.isYourTurn) {
-        return false;
-      }
-
-      // Make sure we have a current user and valid turn data
-      if (!this.currentUser || !this.currentGame.currentTurn) {
-        return false;
-      }
-
-      // Check if the current turn actually matches the current user
-      const currentTurnId = String(this.currentGame.currentTurn);
-      const userId = String(this.currentUser.id || this.currentUser._id);
-
-      return currentTurnId === userId && this.gameInitialized;
+      // Only show actions if it's explicitly the player's turn
+      return this.isYourTurn;
     },
 
     forceStartGame() {
@@ -701,6 +725,9 @@ export default {
         .join(", ");
 
       this.addToLog(`Hand complete. Winner(s): ${winnerNames}`);
+
+      // Force UI update
+      this.forceCardUpdate();
     },
 
     // Handle when winner display countdown completes
@@ -708,7 +735,52 @@ export default {
       console.log('Winner display countdown complete');
       this.showWinnerDisplay = false;
       this.handWinners = [];
-    }
+    },
+
+    handleWinnerDisplayClose() {
+      console.log('Winner display closed');
+      this.showWinnerDisplay = false;
+      this.handWinners = [];
+
+      // Request a game state update to ensure UI is updated
+      this.requestStateUpdate();
+    },
+
+    startNextHand() {
+      if (!this.isCreator || !this.gameId || !this.currentUser) {
+        console.warn('Only the creator can start the next hand');
+        return;
+      }
+
+      console.log('Starting next hand...');
+      this.addToLog('Starting next hand...');
+
+      // Tell server to start the next hand with a new socket event
+      SocketService.gameSocket?.emit('startNextHand', {
+        gameId: this.gameId,
+        userId: this.currentUser.id
+      });
+    },
+    handleGameStateChange(gameState) {
+      // If game state changes from active to waiting, make sure to end any active turns
+      if (
+        this.currentGame &&
+        this.currentGame.status === 'active' &&
+        gameState &&
+        gameState.status === 'waiting'
+      ) {
+        console.log('Game state changed from active to waiting, ending any active turns');
+        if (this.isYourTurn) {
+          this.endTurn();
+        }
+      }
+
+      // Update the game state in store
+      this.updateGameState(gameState);
+
+      // Clear any error message after successful game state update
+      this.SET_ERROR_MESSAGE('');
+    },
   },
 
   created() {
@@ -788,7 +860,7 @@ export default {
     } catch (error) {
       console.error('Error setting up game:', error);
       this.SET_ERROR_MESSAGE('Failed to load game. Please try again.');
-    }
+    };
 
     // Add a card refresh interval
     this.cardRefreshInterval = setInterval(() => {
@@ -801,7 +873,25 @@ export default {
     if (this.handlers.handleHandResult) {
       SocketService.on('handResult', this.handlers.handleHandResult);
       this.eventHandlers.push({ event: 'handResult', handler: this.handlers.handleHandResult });
-    }
+    };
+
+    const gameUpdateHandler = (gameState) => {
+      this.handleGameStateChange(gameState);
+    };
+    SocketService.on('gameUpdate', gameUpdateHandler);
+    this.eventHandlers.push({ event: 'gameUpdate', handler: gameUpdateHandler });
+
+    // Handle status changes
+    const gameStatusChangeHandler = (statusData) => {
+      console.log('Game status changed:', statusData);
+
+      // If game status is changing to waiting, end any active turns
+      if (statusData.status === 'waiting' && this.isYourTurn) {
+        this.endTurn();
+      }
+    };
+    SocketService.on('gameStatusChange', gameStatusChangeHandler);
+    this.eventHandlers.push({ event: 'gameStatusChange', handler: gameStatusChangeHandler });
   },
 
   beforeDestroy() {
