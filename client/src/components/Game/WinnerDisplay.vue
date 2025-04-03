@@ -43,7 +43,7 @@
             </div>
             <div v-else class="player-cards">
               <div v-for="(card, cardIndex) in player.hand" :key="'player-' + player.playerId + '-card-' + cardIndex"
-                class="card-display" :class="{ 'winning-card': player.isWinner }">
+                class="card-display" :class="{ 'winning-card': player.isWinner }" :data-suit="card.suit">
                 {{ formatCard(card) }}
               </div>
               <div v-if="player.hand.length === 0" class="no-cards">
@@ -146,7 +146,7 @@ export default {
     /**
      * Check if the current player is marked as ready
      */
-     isCurrentPlayerReady() {
+    isCurrentPlayerReady() {
       if (!this.currentUser || !this.currentGame || !this.currentGame.players) {
         return false;
       }
@@ -201,10 +201,10 @@ export default {
       return this.allPlayers.map(player => {
         // Create a proper copy to avoid mutating props
         const formattedPlayer = { ...player };
-        
+
         // Determine actual hand type by analyzing the cards
         formattedPlayer.handName = this.determineHandType(player.hand, this.communityCards);
-        
+
         return formattedPlayer;
       });
     },
@@ -212,17 +212,17 @@ export default {
       return (this.allPlayers || []).map(player => {
         // Create a new object to avoid mutating props
         const processedPlayer = { ...player };
-        
+
         // Evaluate the player's hand using our evaluator
         const handEvaluation = PokerHandEvaluator.evaluateHand(
-          player.hand || [], 
+          player.hand || [],
           this.communityCards || []
         );
-        
+
         // Add correct hand type and description
         processedPlayer.handType = handEvaluation.type;
         processedPlayer.handDescription = handEvaluation.description;
-        
+
         return processedPlayer;
       });
     }
@@ -309,50 +309,50 @@ export default {
      * @param {Array} communityCards - The community cards
      * @returns {String} The hand type name
      */
-     determineHandType(playerHand, communityCards) {
+    determineHandType(playerHand, communityCards) {
       if (!playerHand || !Array.isArray(playerHand) || playerHand.length === 0) {
         return 'Unknown Hand';
       }
-      
+
       if (playerHand.length === 0) {
         return 'Folded';
       }
 
       // Simple hand detector for the most common hand types
       // In a real implementation, this should be replaced with a proper poker hand evaluator
-      
+
       // Get all ranks from combined cards (player hand + community cards)
       const allCards = [...playerHand, ...communityCards];
       const ranks = allCards.map(card => card.rank);
-      
+
       // Count occurrences of each rank
       const rankCounts = {};
       ranks.forEach(rank => {
         rankCounts[rank] = (rankCounts[rank] || 0) + 1;
       });
-      
+
       // Check for pairs, three of a kind, etc.
       const pairCount = Object.values(rankCounts).filter(count => count === 2).length;
       const hasThreeOfKind = Object.values(rankCounts).some(count => count === 3);
       const hasFourOfKind = Object.values(rankCounts).some(count => count === 4);
-      
+
       // Determine hand type based on counts
       if (hasFourOfKind) return 'Four of a Kind';
       if (hasThreeOfKind && pairCount > 0) return 'Full House';
       if (hasThreeOfKind) return 'Three of a Kind';
       if (pairCount >= 2) return 'Two Pair';
       if (pairCount === 1) return 'One Pair';
-      
+
       // Determine highest card
       const rankValues = {
         '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
         'J': 11, 'Q': 12, 'K': 13, 'A': 14
       };
-      
+
       const highestRank = ranks.reduce((highest, rank) => {
         return rankValues[rank] > rankValues[highest] ? rank : highest;
       }, ranks[0]);
-      
+
       return `High Card ${highestRank}`;
     }
   }
@@ -630,6 +630,11 @@ export default {
   background-color: rgba(0, 0, 0, 0.1);
   border-radius: 5px;
   padding: 0 15px;
+}
+
+.card-display[data-suit="hearts"],
+.card-display[data-suit="diamonds"] {
+  color: red;
 }
 
 @keyframes pulse {
