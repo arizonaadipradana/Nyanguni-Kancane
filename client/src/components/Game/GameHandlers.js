@@ -376,44 +376,79 @@ export default {
       handleHandResult(result) {
         console.log("Received hand result:", result);
 
-        // Safety check for undefined or invalid data
+        // Add safety checks and debug info for hand result processing
         if (!result) {
-          console.warn("Received empty hand result");
+          console.error("Hand result is empty or invalid");
           return;
         }
 
-        // Safely set the handResult
-        component.handResult = result || {};
-        component.showResult = true;
+        // Deep inspect the result to see what we're receiving
+        console.log("Winners array:", JSON.stringify(result.winners));
+        console.log(
+          "All players cards:",
+          JSON.stringify(result.allPlayersCards)
+        );
+        console.log("Community cards:", JSON.stringify(result.communityCards));
+        console.log("Pot amount:", result.pot);
+        console.log("Is fold win:", result.isFoldWin);
 
-        // Make sure winners array exists and is valid
-        const safeWinners = Array.isArray(result.winners) ? result.winners : [];
+        // Make sure winners array exists and is properly formatted
+        if (
+          !result.winners ||
+          !Array.isArray(result.winners) ||
+          result.winners.length === 0
+        ) {
+          console.error("No valid winners in result data");
+          return;
+        }
 
-        // Safely prepare winner display data
-        component.handWinners = safeWinners.map((winner) => {
-          // Make sure the hand property exists and is an array
-          if (!winner.hand || !Array.isArray(winner.hand)) {
-            winner.hand = [];
-          }
-          return {
-            playerId: winner.playerId || "unknown",
-            username: winner.username || "Unknown Player",
-            handName: winner.handName || "Unknown Hand",
-            hand: Array.isArray(winner.hand) ? winner.hand : [],
-          };
-        });
+        // Create a safe copy of the winners with default values for missing properties
+        const safeWinners = result.winners.map((winner) => ({
+          playerId: winner.playerId || "unknown",
+          username: winner.username || "Unknown Player",
+          handName: winner.handName || "Unknown Hand",
+          hand: Array.isArray(winner.hand) ? winner.hand : [],
+        }));
 
+        // Store all players' cards if provided
+        const allPlayersCards = Array.isArray(result.allPlayersCards)
+          ? result.allPlayersCards.map((player) => ({
+              playerId: player.playerId || "unknown",
+              username: player.username || "Unknown Player",
+              handName: player.handName || "Unknown Hand",
+              hand: Array.isArray(player.hand) ? player.hand : [],
+              isWinner: player.isWinner || false,
+            }))
+          : [];
+
+        // Store community cards if provided
+        const communityCards = Array.isArray(result.communityCards)
+          ? result.communityCards
+          : [];
+
+        // Safely set the data on the component (not on 'this')
+        component.handWinners = safeWinners;
+        component.allPlayersCards = allPlayersCards;
+        component.communityCards = communityCards;
         component.winningPot = result?.pot || 0;
+        component.isFoldWin = result?.isFoldWin || false;
         component.showWinnerDisplay = true;
 
         // Format winner names for log
         const winnerNames = safeWinners
-          .map((winner) => winner.username || "Unknown")
+          .map((winner) => winner.username)
           .join(", ");
 
-        component.addToLog(
-          `Hand complete. Winner(s): ${winnerNames || "Unknown"}`
-        );
+        // Create appropriate log message
+        let logMessage = `Hand complete. Winner(s): ${winnerNames}`;
+        if (result.isFoldWin) {
+          logMessage = `${winnerNames} wins by fold`;
+        }
+
+        component.addToLog(logMessage);
+
+        // Force UI update
+        component.forceCardUpdate();
       },
 
       /**

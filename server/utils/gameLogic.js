@@ -780,7 +780,7 @@ const gameLogic = {
       const activePlayers = game.players.filter(
         (p) => p.isActive && !p.hasFolded
       );
-
+  
       // Prepare hands for evaluation
       const playerHands = activePlayers.map((player) => ({
         playerId: player.user.toString(),
@@ -788,10 +788,10 @@ const gameLogic = {
         holeCards: player.hand,
         communityCards: game.communityCards,
       }));
-
+  
       // Determine winner(s)
       const result = handEvaluator.determineWinners(playerHands);
-
+  
       // Log detailed results for debugging
       console.log("Showdown results determined:");
       console.log(
@@ -800,7 +800,7 @@ const gameLogic = {
       console.log(
         `- Hand types: ${result.winners.map((w) => w.handName).join(", ")}`
       );
-
+  
       // Store hand results in game history
       game.handResults.push({
         winners: result.winners.map((w) => w.playerId),
@@ -813,14 +813,14 @@ const gameLogic = {
         communityCards: game.communityCards,
         timestamp: Date.now(),
       });
-
+  
       // Award pot to winner(s) - this handles database updates too
       const winnerPlayers = result.winners.map((w) =>
         this.getPlayerById(game, w.playerId)
       );
-
+  
       await this.awardPot(game, winnerPlayers);
-
+  
       // Also update all other players' balances to the database
       for (const player of game.players) {
         // Skip winners as they've already been updated
@@ -831,7 +831,7 @@ const gameLogic = {
         ) {
           continue;
         }
-
+  
         try {
           // Update the loser's balance in the database
           await User.findByIdAndUpdate(
@@ -846,7 +846,7 @@ const gameLogic = {
           );
         }
       }
-
+  
       // Prepare detailed winner data with proper error handling
       const safeWinners = result.winners.map((w) => {
         const player = this.getPlayerById(game, w.playerId);
@@ -857,8 +857,17 @@ const gameLogic = {
           handName: w.handName || "Unknown Hand",
         };
       });
-
-      // Return processed result
+  
+      // Prepare data for all players' cards (including losers)
+      const allPlayersCards = activePlayers.map(player => ({
+        playerId: player.user.toString(),
+        username: player.username || "Unknown Player",
+        hand: Array.isArray(player.hand) ? player.hand : [],
+        isWinner: result.winners.some(w => w.playerId === player.user.toString()),
+        handName: result.allHands.find(h => h.playerId === player.user.toString())?.handName || "Unknown Hand"
+      }));
+  
+      // Return processed result with all players' cards
       return {
         winners: safeWinners,
         hands: result.allHands.map((h) => ({
@@ -867,6 +876,8 @@ const gameLogic = {
           hand: h.hand || [],
           handName: h.handName || "Unknown Hand",
         })),
+        allPlayersCards: allPlayersCards,
+        communityCards: game.communityCards
       };
     } catch (error) {
       console.error("Error in processShowdown:", error);

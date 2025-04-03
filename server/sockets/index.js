@@ -613,14 +613,14 @@ module.exports = (io) => {
             } else if (result.nextPhase === "showdown") {
               // Process showdown
               const showdownResult = await gameLogic.processShowdown(game);
-
+            
               // Log showdown result data for debugging
               console.log(
                 `Showdown results - Winners: ${
                   showdownResult.winners?.length || 0
                 }, Pot: ${game.pot}`
               );
-
+            
               // Validate winner data before sending
               if (
                 showdownResult.winners &&
@@ -637,8 +637,8 @@ module.exports = (io) => {
                   )
                   .join(", ");
                 console.log(`Showdown winners: ${winnerInfo}`);
-
-                // Send result to clients with improved data safety
+            
+                // Send result to clients with improved data safety and all players' cards
                 gameIo.to(gameId).emit("handResult", {
                   winners: showdownResult.winners.map((w) => {
                     // Safely get the player and their hand
@@ -663,6 +663,8 @@ module.exports = (io) => {
                         };
                       })
                     : [],
+                  allPlayersCards: showdownResult.allPlayersCards || [],
+                  communityCards: game.communityCards,
                   pot: game.pot,
                 });
               } else {
@@ -912,20 +914,55 @@ module.exports = (io) => {
           if (activePlayers.length < 2) {
             // End the current hand, award pot to remaining player
             if (activePlayers.length === 1) {
-              await gameLogic.awardPot(game, activePlayers);
-
-              // Notify about the winner
-              gameIo.to(gameId).emit("handResult", {
-                winners: [
-                  {
-                    playerId: activePlayers[0].user.toString(),
-                    username: activePlayers[0].username,
-                    handName: "Winner by forfeit",
-                  },
-                ],
-                pot: game.pot,
-                message: `${activePlayers[0].username} wins the pot as other players left`,
+              // Hand ends, remaining player wins
+              result.handEnded = true;
+              result.roundEnded = true;
+              result.winners = [activePlayers[0].user.toString()];
+            
+              // Award pot to winner
+              await this.awardPot(game, [activePlayers[0]]);
+            
+              // Only send the community cards that have been dealt so far
+              const dealtCommunityCards = game.communityCards || [];
+              
+              // Find the winner player
+              const winnerPlayer = game.players.find(
+                (p) => p.user.toString() === result.winners[0]
+              );
+            
+              // Get all active players at the time of the fold
+              const allActivePlayers = game.players.filter(p => p.isActive && p.hand && p.hand.length > 0);
+              
+              // Create allPlayersCards format with only the winner's cards visible
+              const allPlayersCards = allActivePlayers.map(player => {
+                const isWinner = player.user.toString() === result.winners[0];
+                return {
+                  playerId: player.user.toString(),
+                  username: player.username || "Unknown Player",
+                  // Only include hand for the winner, empty array for others
+                  hand: isWinner ? (Array.isArray(player.hand) ? player.hand : []) : [],
+                  isWinner: isWinner,
+                  handName: isWinner ? "Winner by fold" : "Folded"
+                };
               });
+            
+              // Emit the result with the current state of the community cards
+              gameIo.to(gameId).emit("handResult", {
+                winners: [{
+                  playerId: winnerPlayer.user.toString(),
+                  username: winnerPlayer.username || "Unknown Player",
+                  handName: "Winner by fold",
+                  hand: Array.isArray(winnerPlayer.hand) ? winnerPlayer.hand : []
+                }],
+                allPlayersCards: allPlayersCards,
+                communityCards: dealtCommunityCards,
+                pot: game.pot,
+                isFoldWin: true,  // Add flag to indicate this was a fold win
+                message: `${winnerPlayer.username} wins by fold`
+              });
+            
+              result.message = `${activePlayers[0].username} wins the pot of ${game.pot} chips`;
+              return result;
             }
 
             // Check if game should end

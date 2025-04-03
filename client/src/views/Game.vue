@@ -38,19 +38,10 @@
         <ActionTimer :initialTime="actionTimeLimit" :isActive="isYourTurn" :currentGame="currentGame"
           @timerComplete="handleTimerComplete" v-if="isYourTurn" />
 
-          <WinnerDisplay 
-  :winners="handWinners" 
-  :pot="winningPot" 
-  :visible="showWinnerDisplay" 
-  :formatCard="formatCard"
-  :currentGame="currentGame"
-  :currentUser="currentUser"
-  :gameId="gameId"
-  :isCreator="isCreator"
-  @close="handleWinnerDisplayClose"
-  @addToLog="addToLog"
-  @startNextHand="startNextHand"
-/>
+        <WinnerDisplay :winners="handWinners" :allPlayers="allPlayersCards" :communityCards="communityCards"
+          :pot="winningPot" :visible="showWinnerDisplay" :formatCard="formatCard" :currentGame="currentGame"
+          :currentUser="currentUser" :gameId="gameId" :isCreator="isCreator" :isFoldWin="isFoldWin"
+          @close="handleWinnerDisplayClose" @addToLog="addToLog" @startNextHand="startNextHand" />
       </div>
 
       <!-- Game chat/log -->
@@ -131,6 +122,9 @@ export default {
       winningPot: 0,
       playerHand: [],
       availableActions: [],
+      allPlayersCards: [],
+      communityCards: [],
+      isFoldWin: false,
     };
   },
 
@@ -892,6 +886,11 @@ export default {
     };
     SocketService.on('gameStatusChange', gameStatusChangeHandler);
     this.eventHandlers.push({ event: 'gameStatusChange', handler: gameStatusChangeHandler });
+
+    if (this.handlers && this.handlers.handleHandResult) {
+      SocketService.on('handResult', this.handlers.handleHandResult);
+      this.eventHandlers.push({ event: 'handResult', handler: this.handlers.handleHandResult });
+    }
   },
 
   beforeDestroy() {

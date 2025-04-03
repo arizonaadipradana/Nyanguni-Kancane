@@ -1,4 +1,4 @@
-<!-- client/src/components/Game/WinnerDisplay.vue -->
+<!-- File path: client/src/components/Game/WinnerDisplay.vue -->
 <template>
   <div class="winner-display" v-if="visible">
     <div class="winner-overlay"></div>
@@ -8,33 +8,64 @@
         <span v-else-if="winners && winners.length > 1">Split Pot!</span>
         <span v-else>Game Result</span>
       </h2>
-      
-      <div class="winner-info" v-for="(winner, index) in winners" :key="index">
-        <div class="winner-name">{{ winner.username }}</div>
-        <div class="winner-hand-name">{{ winner.handName }}</div>
-        
-        <div class="winner-cards">
-          <div v-if="!winner.hand || winner.hand.length === 0" class="no-cards-message">
-            No cards to display
-          </div>
-          <template v-else>
-            <div 
-              v-for="(card, cardIndex) in winner.hand" 
-              :key="cardIndex" 
-              class="card-display"
-              :class="{ 'highlighted': isCardInWinningHand(card, winner) }"
-            >
-              {{ formatCard(card) }}
-            </div>
-          </template>
-        </div>
 
-        <!-- Show pot amount for the winner -->
-        <div class="winner-pot">
-          Won {{ splitPotAmount(winner) }} chips
+      <!-- Community Cards Section -->
+      <div class="community-cards-section">
+        <h3>Community Cards</h3>
+        <div v-if="isFoldWin && !displayCommunityCards.length" class="fold-win-message">
+          Hand ended early - no community cards were dealt
+        </div>
+        <div v-else-if="!displayCommunityCards.length" class="fold-win-message">
+          No community cards
+        </div>
+        <div class="community-cards" v-else>
+          <div v-for="(card, index) in displayCommunityCards" :key="'community-' + index"
+            class="card-display community-card">
+            {{ formatCard(card) }}
+          </div>
         </div>
       </div>
-      
+
+      <!-- All Players Cards Section -->
+      <div class="all-players-section">
+        <h3>Players' Hands</h3>
+        <div class="players-grid">
+          <div v-for="player in allPlayers" :key="player.playerId" class="player-result"
+            :class="{ 'winner-result': player.isWinner, 'folded-player': player.handName === 'Folded' }">
+            <div class="player-name-heading">
+              {{ player.username }}
+              <span v-if="player.isWinner" class="winner-badge">Winner</span>
+              <span v-if="player.handName === 'Folded'" class="folded-badge">Folded</span>
+            </div>
+            <div class="player-hand-name">{{ player.handName }}</div>
+            <div v-if="player.handName === 'Folded'" class="folded-message">
+              Player folded their hand
+            </div>
+            <div v-else class="player-cards">
+              <div v-for="(card, cardIndex) in player.hand" :key="'player-' + player.playerId + '-card-' + cardIndex"
+                class="card-display" :class="{ 'winning-card': player.isWinner }">
+                {{ formatCard(card) }}
+              </div>
+              <div v-if="player.hand.length === 0" class="no-cards">
+                Cards not shown
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Winners Section (simplified since we now have all players' hands) -->
+      <div class="winner-info" v-if="winners && winners.length > 0">
+        <div class="winner-pot">
+          <span v-if="winners.length === 1">
+            {{ winners[0].username }} won {{ pot }} chips
+          </span>
+          <span v-else>
+            Split pot: {{winners.map(w => w.username).join(', ')}} each won {{ splitPotAmount(winners[0]) }} chips
+          </span>
+        </div>
+      </div>
+
       <!-- Ready Up Section instead of countdown -->
       <div class="ready-up-section">
         <p class="ready-message">Please ready up for the next hand</p>
@@ -42,7 +73,7 @@
           {{ isCurrentPlayerReady ? 'I\'m Ready ✓' : 'Mark as Ready' }}
         </button>
         <p v-if="readySummary" class="ready-info">{{ readySummary }}</p>
-        
+
         <!-- Start Next Hand button for creator -->
         <div v-if="isCreator && areEnoughPlayersReady" class="start-next-hand">
           <button @click="emitStartNextHand" class="start-next-hand-btn">
@@ -50,7 +81,7 @@
           </button>
         </div>
       </div>
-      
+
       <!-- Close Button -->
       <button @click="closeWinnerDisplay" class="close-display-btn">Close</button>
     </div>
@@ -62,9 +93,17 @@ import SocketService from '@/services/SocketService';
 
 export default {
   name: 'WinnerDisplay',
-  
+
   props: {
     winners: {
+      type: Array,
+      default: () => []
+    },
+    allPlayers: {
+      type: Array,
+      default: () => []
+    },
+    communityCards: {
       type: Array,
       default: () => []
     },
@@ -95,9 +134,13 @@ export default {
     isCreator: {
       type: Boolean,
       default: false
+    },
+    isFoldWin: {
+      type: Boolean,
+      default: false
     }
   },
-  
+
   computed: {
     /**
      * Check if the current player is marked as ready
@@ -106,14 +149,14 @@ export default {
       if (!this.currentUser || !this.currentGame || !this.currentGame.players) {
         return false;
       }
-      
+
       const currentPlayer = this.currentGame.players.find(
         p => p.id === this.currentUser.id
       );
-      
+
       return currentPlayer ? currentPlayer.isReady : false;
     },
-    
+
     /**
      * Get a summary of player readiness
      */
@@ -121,10 +164,10 @@ export default {
       if (!this.currentGame || !this.currentGame.players) {
         return 'Waiting for players...';
       }
-      
+
       const readyCount = this.currentGame.players.filter(p => p.isReady).length;
       const totalPlayers = this.currentGame.players.length;
-      
+
       if (readyCount === 0) {
         return 'No players are ready yet';
       } else if (readyCount === totalPlayers && totalPlayers >= 2) {
@@ -133,7 +176,7 @@ export default {
         return `${readyCount} of ${totalPlayers} players ready`;
       }
     },
-    
+
     /**
      * Check if enough players are ready to start next hand
      */
@@ -141,12 +184,19 @@ export default {
       if (!this.currentGame || !this.currentGame.players) {
         return false;
       }
-      
+
       const readyPlayers = this.currentGame.players.filter(p => p.isReady);
       return readyPlayers.length >= 2;
+    },
+
+    /**
+     * Safe access to community cards with validation
+     */
+    displayCommunityCards() {
+      return Array.isArray(this.communityCards) ? this.communityCards : [];
     }
   },
-  
+
   watch: {
     // Watch for changes in the current game to update readiness status
     currentGame: {
@@ -159,27 +209,19 @@ export default {
       deep: true
     }
   },
-  
+
   methods: {
-    // Check if a card is part of the winning hand combination
-    isCardInWinningHand(card, winner) {
-      // In a real implementation, you would need logic to determine
-      // which cards actually formed the winning hand
-      // For now, we'll highlight all cards as winners
-      return true;
-    },
-    
     // Calculate split pot amount for multiple winners
     splitPotAmount(winner) {
       if (this.winners.length <= 1) return this.pot;
       return Math.floor(this.pot / this.winners.length);
     },
-    
+
     // Close the winner display
     closeWinnerDisplay() {
       this.$emit('close');
     },
-    
+
     /**
      * Toggle current player's ready status
      */
@@ -188,7 +230,7 @@ export default {
         console.error('Cannot toggle ready: missing user or game data');
         return;
       }
-      
+
       // Safety check for socket connection
       if (!SocketService.isSocketConnected()) {
         console.warn('Socket not connected, trying to reconnect...');
@@ -197,18 +239,18 @@ export default {
         });
         return;
       }
-      
+
       // Send ready status update via socket
       SocketService.gameSocket?.emit('playerReady', {
         gameId: this.gameId,
         userId: this.currentUser.id,
         isReady: !this.isCurrentPlayerReady
       });
-      
+
       // Add to log
       this.$emit('addToLog', `You marked yourself as ${!this.isCurrentPlayerReady ? 'ready' : 'not ready'}`);
     },
-    
+
     /**
      * Emit event to start the next hand (for creator only)
      */
@@ -217,16 +259,16 @@ export default {
         console.warn('Only the creator can start the next hand');
         return;
       }
-      
+
       if (!this.areEnoughPlayersReady) {
         this.$emit('addToLog', 'Not enough players are ready yet');
         return;
       }
-      
+
       console.log('Emitting startNextHand event');
       this.$emit('startNextHand');
       this.$emit('addToLog', 'Starting next hand...');
-      
+
       // Close the winner display after starting next hand
       this.closeWinnerDisplay();
     }
@@ -262,8 +304,10 @@ export default {
   border: 2px solid #3f8c6e;
   border-radius: 10px;
   padding: 20px;
-  min-width: 300px;
-  max-width: 800px;
+  min-width: 320px;
+  max-width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
   text-align: center;
   box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
   animation: scale-in 0.3s ease-out;
@@ -277,31 +321,82 @@ export default {
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
 }
 
-.winner-info {
+/* Community Cards Section */
+.community-cards-section {
   margin-bottom: 20px;
-  padding: 15px;
-  background-color: rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
 }
 
-.winner-name {
-  font-size: 24px;
+.community-cards-section h3 {
+  color: #3f8c6e;
+  margin-bottom: 10px;
+}
+
+.community-cards {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+/* All Players Section */
+.all-players-section {
+  margin-bottom: 20px;
+}
+
+.all-players-section h3 {
+  color: #3f8c6e;
+  margin-bottom: 10px;
+}
+
+.players-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 15px;
+  margin-bottom: 20px;
+}
+
+.player-result {
+  background-color: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.player-result.winner-result {
+  background-color: rgba(241, 196, 15, 0.2);
+  border: 1px solid #f1c40f;
+}
+
+.player-name-heading {
+  font-size: 18px;
   font-weight: bold;
   color: white;
   margin-bottom: 5px;
+  position: relative;
 }
 
-.winner-hand-name {
-  font-size: 20px;
+.winner-badge {
+  font-size: 12px;
+  background-color: #f1c40f;
+  color: #000;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 8px;
+  display: inline-block;
+}
+
+.player-hand-name {
+  font-size: 16px;
   color: #3f8c6e;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
 }
 
-.winner-cards {
+.player-cards {
   display: flex;
   justify-content: center;
-  gap: 10px;
-  margin-bottom: 15px;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .card-display {
@@ -318,23 +413,19 @@ export default {
   transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
-.card-display.highlighted {
+.card-display.winning-card {
   box-shadow: 0 0 10px 2px #f1c40f;
-  transform: translateY(-5px);
 }
 
-.no-cards-message {
-  padding: 10px;
-  background-color: rgba(0, 0, 0, 0.3);
-  border-radius: 5px;
-  color: #aaa;
-  font-style: italic;
+.card-display.community-card {
+  background-color: #e8f4f0;
 }
 
 .winner-pot {
   margin-top: 10px;
   font-size: 18px;
   color: #f1c40f;
+  font-weight: bold;
 }
 
 .ready-up-section {
@@ -415,17 +506,60 @@ export default {
   background-color: #444;
 }
 
+.fold-win-message {
+  color: #aaa;
+  font-style: italic;
+  margin: 10px 0;
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 5px;
+}
+
+.folded-player {
+  opacity: 0.7;
+  background-color: rgba(0, 0, 0, 0.2);
+}
+
+.folded-badge {
+  font-size: 12px;
+  background-color: #999;
+  color: #000;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 8px;
+  display: inline-block;
+}
+
+.folded-message {
+  color: #999;
+  font-style: italic;
+  margin: 10px 0;
+  font-size: 14px;
+}
+
+.no-cards {
+  color: #999;
+  font-style: italic;
+  height: 85px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.1);
+  border-radius: 5px;
+  padding: 0 15px;
+}
+
 @keyframes pulse {
   0% {
     transform: scale(1);
     box-shadow: 0 0 0 0 rgba(243, 156, 18, 0.7);
   }
-  
+
   70% {
     transform: scale(1.05);
     box-shadow: 0 0 0 10px rgba(243, 156, 18, 0);
   }
-  
+
   100% {
     transform: scale(1);
     box-shadow: 0 0 0 0 rgba(243, 156, 18, 0);
@@ -437,34 +571,31 @@ export default {
     transform: scale(0.8);
     opacity: 0;
   }
+
   100% {
     transform: scale(1);
     opacity: 1;
   }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
   .winner-content {
-    width: 90%;
+    width: 95%;
     padding: 15px;
   }
-  
+
   .winner-title {
     font-size: 24px;
   }
-  
-  .winner-name {
-    font-size: 20px;
+
+  .players-grid {
+    grid-template-columns: 1fr;
   }
-  
-  .winner-hand-name {
-    font-size: 16px;
-  }
-  
+
   .card-display {
-    width: 40px;
-    height: 60px;
-    font-size: 16px;
+    width: 45px;
+    height: 65px;
+    font-size: 18px;
   }
 }
 </style>
