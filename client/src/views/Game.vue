@@ -75,6 +75,7 @@ import { formatCard, getDefaultOptions, addToGameLog } from '@/utils/gameUtils';
 import ActionTimer from '@/components/Game/ActionTimer.vue';
 import WinnerDisplay from '@/components/Game/WinnerDisplay.vue';
 import PlayerReadyComponent from '@/components/Game/PlayerReadyComponent.vue';
+import PokerHandEvaluator from '@/utils/PokerHandEvaluator';
 
 export default {
   name: 'Game',
@@ -708,9 +709,36 @@ export default {
         hand: Array.isArray(winner.hand) ? winner.hand : []
       }));
 
-      // Safely set the handResult data
+      // Process all players' cards with proper hand evaluation
+      let allPlayersCards = [];
+
+      if (Array.isArray(result.allPlayersCards)) {
+        allPlayersCards = result.allPlayersCards.map(player => {
+          // Get player hand correctly evaluated
+          const hand = Array.isArray(player.hand) ? player.hand : [];
+          const communityCards = Array.isArray(result.communityCards) ? result.communityCards : [];
+
+          // Evaluate the actual hand type
+          const evaluation = PokerHandEvaluator.evaluateHand(hand, communityCards);
+
+          return {
+            ...player,
+            handName: evaluation.description,
+            handType: evaluation.type,
+            isWinner: player.isWinner || safeWinners.some(w => w.playerId === player.playerId)
+          };
+        });
+      }
+
+      // Store community cards
+      const communityCards = Array.isArray(result.communityCards) ? result.communityCards : [];
+
+      // Safely set the data on the component
       this.handWinners = safeWinners;
+      this.allPlayersCards = allPlayersCards;
+      this.communityCards = communityCards;
       this.winningPot = result?.pot || 0;
+      this.isFoldWin = result?.isFoldWin || false;
       this.showWinnerDisplay = true;
 
       // Format winner names for log

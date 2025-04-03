@@ -1,4 +1,4 @@
-<!-- File path: client/src/components/Game/WinnerDisplay.vue -->
+<!-- client/src/components/Game/WinnerDisplay.vue -->
 <template>
   <div class="winner-display" v-if="visible">
     <div class="winner-overlay"></div>
@@ -30,15 +30,15 @@
       <div class="all-players-section">
         <h3>Players' Hands</h3>
         <div class="players-grid">
-          <div v-for="player in allPlayers" :key="player.playerId" class="player-result"
-            :class="{ 'winner-result': player.isWinner, 'folded-player': player.handName === 'Folded' }">
+          <div v-for="player in processedPlayers" :key="player.playerId" class="player-result"
+            :class="{ 'winner-result': player.isWinner, 'folded-player': player.handType === 'Folded' }">
             <div class="player-name-heading">
               {{ player.username }}
               <span v-if="player.isWinner" class="winner-badge">Winner</span>
-              <span v-if="player.handName === 'Folded'" class="folded-badge">Folded</span>
+              <span v-if="player.handType === 'Folded'" class="folded-badge">Folded</span>
             </div>
-            <div class="player-hand-name">{{ player.handName }}</div>
-            <div v-if="player.handName === 'Folded'" class="folded-message">
+            <div class="player-hand-name">{{ player.handDescription }}</div>
+            <div v-if="player.handType === 'Folded'" class="folded-message">
               Player folded their hand
             </div>
             <div v-else class="player-cards">
@@ -54,7 +54,7 @@
         </div>
       </div>
 
-      <!-- Winners Section (simplified since we now have all players' hands) -->
+      <!-- Winners Section -->
       <div class="winner-info" v-if="winners && winners.length > 0">
         <div class="winner-pot">
           <span v-if="winners.length === 1">
@@ -66,7 +66,7 @@
         </div>
       </div>
 
-      <!-- Ready Up Section instead of countdown -->
+      <!-- Ready Up Section -->
       <div class="ready-up-section">
         <p class="ready-message">Please ready up for the next hand</p>
         <button @click="toggleReady" class="ready-btn" :class="{ 'ready-confirm': isCurrentPlayerReady }">
@@ -90,6 +90,7 @@
 
 <script>
 import SocketService from '@/services/SocketService';
+import PokerHandEvaluator from '@/utils/PokerHandEvaluator';
 
 export default {
   name: 'WinnerDisplay',
@@ -145,7 +146,7 @@ export default {
     /**
      * Check if the current player is marked as ready
      */
-    isCurrentPlayerReady() {
+     isCurrentPlayerReady() {
       if (!this.currentUser || !this.currentGame || !this.currentGame.players) {
         return false;
       }
@@ -194,6 +195,36 @@ export default {
      */
     displayCommunityCards() {
       return Array.isArray(this.communityCards) ? this.communityCards : [];
+    },
+
+    formattedPlayerResults() {
+      return this.allPlayers.map(player => {
+        // Create a proper copy to avoid mutating props
+        const formattedPlayer = { ...player };
+        
+        // Determine actual hand type by analyzing the cards
+        formattedPlayer.handName = this.determineHandType(player.hand, this.communityCards);
+        
+        return formattedPlayer;
+      });
+    },
+    processedPlayers() {
+      return (this.allPlayers || []).map(player => {
+        // Create a new object to avoid mutating props
+        const processedPlayer = { ...player };
+        
+        // Evaluate the player's hand using our evaluator
+        const handEvaluation = PokerHandEvaluator.evaluateHand(
+          player.hand || [], 
+          this.communityCards || []
+        );
+        
+        // Add correct hand type and description
+        processedPlayer.handType = handEvaluation.type;
+        processedPlayer.handDescription = handEvaluation.description;
+        
+        return processedPlayer;
+      });
     }
   },
 
@@ -271,6 +302,58 @@ export default {
 
       // Close the winner display after starting next hand
       this.closeWinnerDisplay();
+    },
+    /**
+     * Determine actual hand type by analyzing the player's hand combined with community cards
+     * @param {Array} playerHand - The player's hole cards
+     * @param {Array} communityCards - The community cards
+     * @returns {String} The hand type name
+     */
+     determineHandType(playerHand, communityCards) {
+      if (!playerHand || !Array.isArray(playerHand) || playerHand.length === 0) {
+        return 'Unknown Hand';
+      }
+      
+      if (playerHand.length === 0) {
+        return 'Folded';
+      }
+
+      // Simple hand detector for the most common hand types
+      // In a real implementation, this should be replaced with a proper poker hand evaluator
+      
+      // Get all ranks from combined cards (player hand + community cards)
+      const allCards = [...playerHand, ...communityCards];
+      const ranks = allCards.map(card => card.rank);
+      
+      // Count occurrences of each rank
+      const rankCounts = {};
+      ranks.forEach(rank => {
+        rankCounts[rank] = (rankCounts[rank] || 0) + 1;
+      });
+      
+      // Check for pairs, three of a kind, etc.
+      const pairCount = Object.values(rankCounts).filter(count => count === 2).length;
+      const hasThreeOfKind = Object.values(rankCounts).some(count => count === 3);
+      const hasFourOfKind = Object.values(rankCounts).some(count => count === 4);
+      
+      // Determine hand type based on counts
+      if (hasFourOfKind) return 'Four of a Kind';
+      if (hasThreeOfKind && pairCount > 0) return 'Full House';
+      if (hasThreeOfKind) return 'Three of a Kind';
+      if (pairCount >= 2) return 'Two Pair';
+      if (pairCount === 1) return 'One Pair';
+      
+      // Determine highest card
+      const rankValues = {
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+        'J': 11, 'Q': 12, 'K': 13, 'A': 14
+      };
+      
+      const highestRank = ranks.reduce((highest, rank) => {
+        return rankValues[rank] > rankValues[highest] ? rank : highest;
+      }, ranks[0]);
+      
+      return `High Card ${highestRank}`;
     }
   }
 };

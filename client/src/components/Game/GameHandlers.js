@@ -2,6 +2,7 @@
 /**
  * Socket event handlers for the Game component
  */
+import PokerHandEvaluator from '@/utils/PokerHandEvaluator';
 
 export default {
   /**
@@ -366,42 +367,31 @@ export default {
       },
 
       /**
-       * Handle hand result event with better error handling
-       * @param {Object} result - Hand result data
-       */
-      /**
-       * Handle hand result event with better error handling
+       * Handle hand result event with enhanced hand evaluation
        * @param {Object} result - Hand result data
        */
       handleHandResult(result) {
         console.log("Received hand result:", result);
-
+  
         // Add safety checks and debug info for hand result processing
         if (!result) {
           console.error("Hand result is empty or invalid");
           return;
         }
-
+  
         // Deep inspect the result to see what we're receiving
         console.log("Winners array:", JSON.stringify(result.winners));
-        console.log(
-          "All players cards:",
-          JSON.stringify(result.allPlayersCards)
-        );
+        console.log("All players cards:", JSON.stringify(result.allPlayersCards));
         console.log("Community cards:", JSON.stringify(result.communityCards));
         console.log("Pot amount:", result.pot);
         console.log("Is fold win:", result.isFoldWin);
-
+  
         // Make sure winners array exists and is properly formatted
-        if (
-          !result.winners ||
-          !Array.isArray(result.winners) ||
-          result.winners.length === 0
-        ) {
+        if (!result.winners || !Array.isArray(result.winners) || result.winners.length === 0) {
           console.error("No valid winners in result data");
           return;
         }
-
+  
         // Create a safe copy of the winners with default values for missing properties
         const safeWinners = result.winners.map((winner) => ({
           playerId: winner.playerId || "unknown",
@@ -409,44 +399,69 @@ export default {
           handName: winner.handName || "Unknown Hand",
           hand: Array.isArray(winner.hand) ? winner.hand : [],
         }));
-
-        // Store all players' cards if provided
+  
+        // Process all players' cards and properly evaluate their hands
         const allPlayersCards = Array.isArray(result.allPlayersCards)
-          ? result.allPlayersCards.map((player) => ({
-              playerId: player.playerId || "unknown",
-              username: player.username || "Unknown Player",
-              handName: player.handName || "Unknown Hand",
-              hand: Array.isArray(player.hand) ? player.hand : [],
-              isWinner: player.isWinner || false,
-            }))
+          ? result.allPlayersCards.map((player) => {
+              // Process player hand and evaluate it properly
+              const playerHand = Array.isArray(player.hand) ? player.hand : [];
+              const commCards = Array.isArray(result.communityCards) 
+                ? result.communityCards 
+                : [];
+              
+              // Only evaluate if we have valid cards
+              let handType = "Unknown";
+              let handDescription = "Unknown Hand";
+              
+              if (playerHand.length > 0) {
+                const evaluation = PokerHandEvaluator.evaluateHand(
+                  playerHand,
+                  commCards
+                );
+                handType = evaluation.type;
+                handDescription = evaluation.description;
+              } else if (player.handName === "Folded") {
+                handType = "Folded";
+                handDescription = "Folded";
+              }
+  
+              return {
+                playerId: player.playerId || "unknown",
+                username: player.username || "Unknown Player",
+                handName: handDescription, // Use the evaluated hand name
+                handType: handType,
+                hand: playerHand,
+                isWinner: player.isWinner || safeWinners.some(w => w.playerId === player.playerId),
+              };
+            })
           : [];
-
+  
         // Store community cards if provided
         const communityCards = Array.isArray(result.communityCards)
           ? result.communityCards
           : [];
-
-        // Safely set the data on the component (not on 'this')
+  
+        // Safely set the data on the component
         component.handWinners = safeWinners;
         component.allPlayersCards = allPlayersCards;
         component.communityCards = communityCards;
         component.winningPot = result?.pot || 0;
         component.isFoldWin = result?.isFoldWin || false;
         component.showWinnerDisplay = true;
-
+  
         // Format winner names for log
         const winnerNames = safeWinners
           .map((winner) => winner.username)
           .join(", ");
-
+  
         // Create appropriate log message
         let logMessage = `Hand complete. Winner(s): ${winnerNames}`;
         if (result.isFoldWin) {
           logMessage = `${winnerNames} wins by fold`;
         }
-
+  
         component.addToLog(logMessage);
-
+  
         // Force UI update
         component.forceCardUpdate();
       },
