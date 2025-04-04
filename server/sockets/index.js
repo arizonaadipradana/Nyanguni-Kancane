@@ -1478,7 +1478,8 @@ module.exports = (io) => {
         const updatedGameState = gameLogic.getSanitizedGameState(game);
         gameIo.to(gameId).emit("gameUpdate", updatedGameState);
 
-        // Check if auto-start conditions are met (all players are ready and at least 2 players)
+        // Check if all players are ready and emit an event
+        // This is just to notify, but doesn't automatically start the game
         const readyPlayers = game.players.filter((p) => p.isReady);
         const allPlayersReady = readyPlayers.length === game.players.length;
         const enoughPlayers = readyPlayers.length >= 2;
@@ -1488,7 +1489,7 @@ module.exports = (io) => {
         );
 
         if (allPlayersReady && enoughPlayers) {
-          // Emit event that all players are ready, to start countdown on client
+          // Emit event that all players are ready
           gameIo.to(gameId).emit("allPlayersReady", {
             readyCount: readyPlayers.length,
             totalPlayers: game.players.length,

@@ -85,6 +85,7 @@
           </button>
         </div>
       </div>
+
       <!-- Close Button -->
       <button @click="closeWinnerDisplay" class="close-display-btn">Close</button>
     </div>
@@ -316,6 +317,7 @@ export default {
       // Close the winner display after starting next hand
       this.closeWinnerDisplay();
     },
+    
     /**
      * Determine actual hand type by analyzing the player's hand combined with community cards
      * @param {Array} playerHand - The player's hole cards
@@ -580,7 +582,6 @@ export default {
   font-weight: bold;
   cursor: pointer;
   transition: background-color 0.3s;
-  animation: pulse 2s infinite;
 }
 
 .start-next-hand-btn:hover {
@@ -659,23 +660,6 @@ export default {
   padding: 5px 10px;
   border-radius: 4px;
   margin-top: 10px;
-}
-
-@keyframes pulse {
-  0% {
-    transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(243, 156, 18, 0.7);
-  }
-
-  70% {
-    transform: scale(1.05);
-    box-shadow: 0 0 0 10px rgba(243, 156, 18, 0);
-  }
-
-  100% {
-    transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(243, 156, 18, 0);
-  }
 }
 
 @keyframes scale-in {

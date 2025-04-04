@@ -14,7 +14,6 @@
         :isCreator="isCreator"
         @addToLog="addToLog"
         @playersReady="onPlayersReady"
-        @startGame="startGame"
       />
       
       <!-- Prominent game creator section -->

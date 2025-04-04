@@ -19,7 +19,7 @@
     </div>
     
     <!-- Current player's ready button (only show if game hasn't started) -->
-    <div v-if="currentGame.status === 'waiting' && !gameStartCountdown" class="current-player-controls">
+    <div v-if="currentGame.status === 'waiting'" class="current-player-controls">
       <button 
         @click="toggleReady" 
         class="ready-btn" 
@@ -27,14 +27,6 @@
       >
         {{ isCurrentPlayerReady ? 'I\'m Ready ✓' : 'Mark as Ready' }}
       </button>
-    </div>
-    
-    <!-- Countdown timer (when all players are ready) -->
-    <div v-if="gameStartCountdown" class="countdown-container">
-      <p class="countdown-text">Game starting in {{ countdownSeconds }} seconds</p>
-      <div class="countdown-progress">
-        <div class="countdown-bar" :style="{ width: countdownProgress + '%' }"></div>
-      </div>
     </div>
   </div>
 </template>
@@ -62,14 +54,6 @@ export default {
       type: Boolean,
       default: false
     }
-  },
-  
-  data() {
-    return {
-      gameStartCountdown: false,
-      countdownSeconds: 10,
-      countdownTimer: null
-    };
   },
   
   computed: {
@@ -109,14 +93,6 @@ export default {
     },
     
     /**
-     * Calculate the countdown progress percentage
-     */
-    countdownProgress() {
-      const maxCountdown = 10; // Maximum countdown in seconds
-      return ((maxCountdown - this.countdownSeconds) / maxCountdown) * 100;
-    },
-    
-    /**
      * Check if enough players are ready to start the game
      */
     areEnoughPlayersReady() {
@@ -151,7 +127,7 @@ export default {
     // Listen for player ready updates
     SocketService.on('playerReadyUpdate', this.handlePlayerReadyUpdate);
     
-    // Listen for all players ready event to start countdown
+    // Listen for all players ready event
     SocketService.on('allPlayersReady', this.handleAllPlayersReady);
     
     // Do initial check on mount
@@ -164,9 +140,6 @@ export default {
     // Clean up event listeners
     SocketService.off('playerReadyUpdate', this.handlePlayerReadyUpdate);
     SocketService.off('allPlayersReady', this.handleAllPlayersReady);
-    
-    // Clear any active countdown
-    this.clearCountdown();
   },
   
   methods: {
@@ -181,9 +154,9 @@ export default {
       // If all players are ready and there are at least 2, handle that
       if (this.currentGame && this.currentGame.players) {
         const allReady = this.currentGame.players.length >= 2 && 
-                         this.currentGame.players.every(p => p.isReady);
+                       this.currentGame.players.every(p => p.isReady);
         
-        if (allReady && !this.gameStartCountdown) {
+        if (allReady) {
           this.handleAllPlayersReady({
             readyCount: this.currentGame.players.length,
             totalPlayers: this.currentGame.players.length
@@ -247,48 +220,8 @@ export default {
         this.$emit('playersReady', true);
       }
       
-      // Optional: start countdown
-      this.startCountdown();
-      
       // Log the event
       this.$emit('addToLog', 'All players are ready! Game can start.');
-    },
-    
-    /**
-     * Start countdown timer for game start
-     */
-    startCountdown() {
-      // Clear any existing countdown
-      this.clearCountdown();
-      
-      // Initialize countdown
-      this.gameStartCountdown = true;
-      this.countdownSeconds = 10;
-      
-      // Start the timer
-      this.countdownTimer = setInterval(() => {
-        this.countdownSeconds--;
-        
-        if (this.countdownSeconds <= 0) {
-          this.clearCountdown();
-          
-          // If creator, auto-start the game
-          if (this.isCreator) {
-            this.$emit('startGame');
-          }
-        }
-      }, 1000);
-    },
-    
-    /**
-     * Clear the countdown timer
-     */
-    clearCountdown() {
-      if (this.countdownTimer) {
-        clearInterval(this.countdownTimer);
-        this.countdownTimer = null;
-      }
-      this.gameStartCountdown = false;
     }
   }
 };
@@ -370,30 +303,6 @@ export default {
 
 .ready-btn.ready-confirm:hover {
   background-color: #3d8b40;
-}
-
-.countdown-container {
-  margin-top: 20px;
-  text-align: center;
-}
-
-.countdown-text {
-  font-size: 18px;
-  color: #f39c12;
-  margin-bottom: 10px;
-}
-
-.countdown-progress {
-  height: 8px;
-  background-color: #333;
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.countdown-bar {
-  height: 100%;
-  background-color: #f39c12;
-  transition: width 1s linear;
 }
 
 @media (max-width: 600px) {
