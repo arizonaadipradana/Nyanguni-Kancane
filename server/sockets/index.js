@@ -472,6 +472,15 @@ module.exports = (io) => {
             return;
           }
 
+          // Ensure the amount is a valid number for bet/raise actions
+          if (
+            (action === "bet" || action === "raise") &&
+            (typeof amount !== "number" || amount <= 0)
+          ) {
+            socket.emit("gameError", { message: "Invalid bet amount" });
+            return;
+          }
+
           // Process the action
           const result = await gameLogic.processPlayerAction(
             game,
@@ -499,6 +508,19 @@ module.exports = (io) => {
             const winnerPlayer = game.players.find(
               (p) => p.user.toString() === result.winners[0]
             );
+
+            // Make sure pot is calculated correctly for fold wins
+            // Check the actual committed chips
+            const totalChipsInPot = game.players.reduce(
+              (sum, p) => sum + p.chips,
+              0
+            );
+            if (game.pot !== totalChipsInPot) {
+              console.log(
+                `Correcting pot from ${game.pot} to ${totalChipsInPot} based on player chips`
+              );
+              game.pot = totalChipsInPot;
+            }
 
             const winnerHand = winnerPlayer.hand || [];
             if (winnerPlayer && winnerPlayer.user) {
@@ -613,14 +635,37 @@ module.exports = (io) => {
             } else if (result.nextPhase === "showdown") {
               // Process showdown
               const showdownResult = await gameLogic.processShowdown(game);
-            
+
               // Log showdown result data for debugging
               console.log(
                 `Showdown results - Winners: ${
                   showdownResult.winners?.length || 0
-                }, Pot: ${game.pot}`
+                }, Pot: ${showdownResult.pot || game.pot}`
               );
-            
+
+              // IMPORTANT FIX: Ensure pot is correct in the result
+              // If pot is missing or zero but we know there should be a pot, use the one from gameLogic result
+              if (!showdownResult.pot && game.pot > 0) {
+                showdownResult.pot = game.pot;
+                console.log(
+                  `Fixed missing pot in showdown result, set to ${game.pot}`
+                );
+              }
+
+              // Additional safety: If both are zero but players have chips in pot, recalculate
+              if (showdownResult.pot <= 0 && game.pot <= 0) {
+                const totalChipsInPot = game.players.reduce(
+                  (sum, p) => sum + p.chips,
+                  0
+                );
+                if (totalChipsInPot > 0) {
+                  showdownResult.pot = totalChipsInPot;
+                  console.log(
+                    `Recalculated pot from player chips: ${totalChipsInPot}`
+                  );
+                }
+              }
+
               // Validate winner data before sending
               if (
                 showdownResult.winners &&
@@ -636,8 +681,10 @@ module.exports = (io) => {
                       }`
                   )
                   .join(", ");
-                console.log(`Showdown winners: ${winnerInfo}`);
-            
+                console.log(
+                  `Showdown winners: ${winnerInfo}, pot: ${showdownResult.pot}`
+                );
+
                 // Send result to clients with improved data safety and all players' cards
                 gameIo.to(gameId).emit("handResult", {
                   winners: showdownResult.winners.map((w) => {
@@ -665,7 +712,11 @@ module.exports = (io) => {
                     : [],
                   allPlayersCards: showdownResult.allPlayersCards || [],
                   communityCards: game.communityCards,
-                  pot: game.pot,
+                  // CRITICAL FIX: Ensure pot is not zero
+                  pot:
+                    showdownResult.pot ||
+                    game.pot ||
+                    game.players.reduce((sum, p) => sum + p.chips, 0),
                 });
               } else {
                 console.error("Invalid showdown result data:", showdownResult);
@@ -918,49 +969,59 @@ module.exports = (io) => {
               result.handEnded = true;
               result.roundEnded = true;
               result.winners = [activePlayers[0].user.toString()];
-            
+
               // Award pot to winner
               await this.awardPot(game, [activePlayers[0]]);
-            
+
               // Only send the community cards that have been dealt so far
               const dealtCommunityCards = game.communityCards || [];
-              
+
               // Find the winner player
               const winnerPlayer = game.players.find(
                 (p) => p.user.toString() === result.winners[0]
               );
-            
+
               // Get all active players at the time of the fold
-              const allActivePlayers = game.players.filter(p => p.isActive && p.hand && p.hand.length > 0);
-              
+              const allActivePlayers = game.players.filter(
+                (p) => p.isActive && p.hand && p.hand.length > 0
+              );
+
               // Create allPlayersCards format with only the winner's cards visible
-              const allPlayersCards = allActivePlayers.map(player => {
+              const allPlayersCards = allActivePlayers.map((player) => {
                 const isWinner = player.user.toString() === result.winners[0];
                 return {
                   playerId: player.user.toString(),
                   username: player.username || "Unknown Player",
                   // Only include hand for the winner, empty array for others
-                  hand: isWinner ? (Array.isArray(player.hand) ? player.hand : []) : [],
+                  hand: isWinner
+                    ? Array.isArray(player.hand)
+                      ? player.hand
+                      : []
+                    : [],
                   isWinner: isWinner,
-                  handName: isWinner ? "Winner by fold" : "Folded"
+                  handName: isWinner ? "Winner by fold" : "Folded",
                 };
               });
-            
+
               // Emit the result with the current state of the community cards
               gameIo.to(gameId).emit("handResult", {
-                winners: [{
-                  playerId: winnerPlayer.user.toString(),
-                  username: winnerPlayer.username || "Unknown Player",
-                  handName: "Winner by fold",
-                  hand: Array.isArray(winnerPlayer.hand) ? winnerPlayer.hand : []
-                }],
+                winners: [
+                  {
+                    playerId: winnerPlayer.user.toString(),
+                    username: winnerPlayer.username || "Unknown Player",
+                    handName: "Winner by fold",
+                    hand: Array.isArray(winnerPlayer.hand)
+                      ? winnerPlayer.hand
+                      : [],
+                  },
+                ],
                 allPlayersCards: allPlayersCards,
                 communityCards: dealtCommunityCards,
                 pot: game.pot,
-                isFoldWin: true,  // Add flag to indicate this was a fold win
-                message: `${winnerPlayer.username} wins by fold`
+                isFoldWin: true, // Add flag to indicate this was a fold win
+                message: `${winnerPlayer.username} wins by fold`,
               });
-            
+
               result.message = `${activePlayers[0].username} wins the pot of ${game.pot} chips`;
               return result;
             }
@@ -1410,6 +1471,7 @@ module.exports = (io) => {
       }
     });
 
+    // Handle starting next hand with improved database synchronization
     socket.on("startNextHand", async ({ gameId, userId }) => {
       console.log(
         `Received startNextHand event for game ${gameId} from user ${userId}`
@@ -1455,8 +1517,39 @@ module.exports = (io) => {
           });
         }
 
+        // IMPORTANT: Synchronize player balances with database before starting new hand
+        // This ensures we have the right balances from previous hand results
+        for (const player of game.players) {
+          try {
+            const user = await User.findById(player.user);
+            if (user) {
+              // Update player's chips from the database balance
+              if (player.totalChips !== user.balance) {
+                console.log(
+                  `Updating ${player.username}'s balance from ${player.totalChips} to ${user.balance} from database`
+                );
+                player.totalChips = user.balance;
+              }
+            }
+          } catch (dbError) {
+            console.error(
+              `Error fetching user balance for ${player.username}:`,
+              dbError
+            );
+          }
+        }
+
         // Important: Set game status to active before dealing cards
         game.status = "active";
+
+        // Make sure pot is reset to zero
+        game.pot = 0;
+
+        // Reset chips committed to pot for all players
+        game.players.forEach((player) => {
+          player.chips = 0;
+        });
+
         await game.save();
 
         // CRITICAL: Create a fresh deck with completely new cards
@@ -1468,6 +1561,13 @@ module.exports = (io) => {
         // Start a new hand with the fresh deck
         const updatedGame = await gameLogic.startNewHand(game);
         console.log(`New hand started for game ${gameId}`);
+
+        // Notify everyone about the updated player balances
+        gameIo.to(gameId).emit("chatMessage", {
+          type: "system",
+          message: "Player balances updated for new hand",
+          timestamp: new Date(),
+        });
 
         // Log card distribution for verification
         updatedGame.players.forEach((player) => {

@@ -18,6 +18,12 @@ const gameLogic = {
     game.pot = 0;
     game.communityCards = [];
 
+    // CRITICAL: Make sure all player chips committed to pot are reset
+    game.players.forEach((player) => {
+      player.chips = 0;
+      // Other resets remain the same...
+    });
+
     // CRITICAL FIX: Always create a completely new, properly shuffled deck
     const cardDeck = require("./cardDeck");
 
@@ -341,6 +347,15 @@ const gameLogic = {
       throw new Error("Not your turn");
     }
 
+    // Log the action for debugging
+    console.log(
+      `Processing player action: ${player.username} ${action} ${amount}`
+    );
+    console.log(`Current pot: ${game.pot}, currentBet: ${game.currentBet}`);
+    console.log(
+      `Player has ${player.totalChips} total chips and ${player.chips} in pot`
+    );
+
     // Process the action
     switch (action) {
       case "fold":
@@ -364,6 +379,18 @@ const gameLogic = {
           result.handEnded = true;
           result.roundEnded = true;
           result.winners = [activePlayers[0].user.toString()];
+
+          // Make sure pot is correct before awarding
+          const totalChipsInPot = game.players.reduce(
+            (sum, p) => sum + p.chips,
+            0
+          );
+          if (game.pot !== totalChipsInPot) {
+            console.log(
+              `Correcting pot from ${game.pot} to ${totalChipsInPot} based on player chips`
+            );
+            game.pot = totalChipsInPot;
+          }
 
           // Award pot to winner
           await this.awardPot(game, [activePlayers[0]]);
@@ -548,6 +575,14 @@ const gameLogic = {
       }
     }
 
+    // Log the state after the action
+    console.log(`After action: pot=${game.pot}, currentBet=${game.currentBet}`);
+    game.players.forEach((p) => {
+      console.log(
+        `Player ${p.username}: totalChips=${p.totalChips}, chipsInPot=${p.chips}`
+      );
+    });
+
     await game.save();
     return result;
   },
@@ -556,10 +591,25 @@ const gameLogic = {
   async placeBet(game, playerId, amount) {
     const player = this.getPlayerById(game, playerId);
 
+    // Validate amount is a positive number
+    if (typeof amount !== "number" || amount <= 0) {
+      console.error(`Invalid bet amount: ${amount}`);
+      throw new Error("Bet amount must be a positive number");
+    }
+
     // Check if player has enough chips
     if (player.totalChips < amount) {
+      console.error(
+        `Player ${player.username} doesn't have enough chips: has ${player.totalChips}, trying to bet ${amount}`
+      );
       throw new Error("Not enough chips");
     }
+
+    // Log before state
+    console.log(
+      `Before bet: Player ${player.username} has ${player.totalChips} total chips and ${player.chips} in pot`
+    );
+    console.log(`Placing bet of ${amount} chips`);
 
     // Update player chips
     player.totalChips -= amount;
@@ -569,7 +619,14 @@ const gameLogic = {
     game.pot += amount;
     game.currentBet = Math.max(game.currentBet, player.chips);
 
+    // Log after state
+    console.log(
+      `After bet: Player ${player.username} has ${player.totalChips} total chips and ${player.chips} in pot`
+    );
+    console.log(`Game pot is now ${game.pot}`);
+
     await game.save();
+    return true;
   },
 
   // Place an all-in bet
@@ -582,6 +639,12 @@ const gameLogic = {
       throw new Error("No chips left to go all-in");
     }
 
+    // Log before state
+    console.log(
+      `Before all-in: Player ${player.username} has ${player.totalChips} total chips and ${player.chips} in pot`
+    );
+    console.log(`Going all-in with ${allInAmount} chips`);
+
     // Update player chips
     player.totalChips = 0;
     player.chips += allInAmount;
@@ -593,7 +656,14 @@ const gameLogic = {
       game.currentBet = player.chips;
     }
 
+    // Log after state
+    console.log(
+      `After all-in: Player ${player.username} has 0 total chips and ${player.chips} in pot`
+    );
+    console.log(`Game pot is now ${game.pot}`);
+
     await game.save();
+    return true;
   },
 
   /**
@@ -604,6 +674,24 @@ const gameLogic = {
   async awardPot(game, winners) {
     if (!winners || winners.length === 0) {
       throw new Error("No winners provided");
+    }
+
+    // Make sure pot is available - prevent "won 0 chips" bug
+    if (game.pot <= 0) {
+      console.error("Error: Attempting to award a pot of 0 chips");
+      // If debugging, log the current game state
+      console.log("Game state when awarding pot:", {
+        gameId: game.gameId,
+        pot: game.pot,
+        playerChips: game.players.map((p) => ({
+          username: p.username,
+          chips: p.chips,
+          totalChips: p.totalChips,
+        })),
+      });
+      // Set a minimum pot to prevent zero awards
+      game.pot = game.players.reduce((sum, p) => sum + p.chips, 0);
+      console.log(`Corrected pot value to ${game.pot} based on player chips`);
     }
 
     // Split the pot evenly among winners
@@ -649,7 +737,7 @@ const gameLogic = {
           `Updating database balance for user ${update.username} (${update.userId}) to ${update.newBalance}`
         );
 
-        // Update user in database
+        // Update user in database with a forceful approach
         await User.findByIdAndUpdate(
           update.userId,
           { $set: { balance: update.newBalance } },
@@ -668,6 +756,11 @@ const gameLogic = {
 
     // Reset pot
     game.pot = 0;
+
+    // Also reset player chips committed to pot
+    game.players.forEach((player) => {
+      player.chips = 0;
+    });
 
     // Return the updated winners for chaining
     return winners;
@@ -765,22 +858,55 @@ const gameLogic = {
   },
 
   /**
-   * Process the showdown (compare hands) with enhanced balance updates
-   * @param {Object} game - Game document
-   * @returns {Object} Showdown results
-   */
-  /**
-   * Process the showdown (compare hands) with enhanced balance updates
+   * Process the showdown (compare hands) with enhanced balance updates and pot value fix
    * @param {Object} game - Game document
    * @returns {Object} Showdown results
    */
   async processShowdown(game) {
     try {
+      // Store the current pot value before any processing
+      const originalPot = game.pot;
+      console.log(`Original pot before showdown processing: ${originalPot}`);
+
+      // Make sure pot is calculated correctly
+      const totalChipsCommitted = game.players.reduce(
+        (sum, p) => sum + p.chips,
+        0
+      );
+      if (game.pot !== totalChipsCommitted) {
+        console.log(
+          `Correcting pot amount from ${game.pot} to ${totalChipsCommitted} based on player chips`
+        );
+        game.pot = totalChipsCommitted;
+      }
+
+      // Double-check for zero pot (should never happen)
+      if (game.pot <= 0) {
+        console.error("Zero pot detected in showdown! This should not happen.");
+        console.log(
+          "Players' chips:",
+          game.players.map((p) => ({
+            username: p.username,
+            chips: p.chips,
+            totalChips: p.totalChips,
+          }))
+        );
+
+        // Set a minimum pot based on betting history if possible
+        if (totalChipsCommitted > 0) {
+          game.pot = totalChipsCommitted;
+        } else if (originalPot > 0) {
+          // If we had a pot before, use that value
+          game.pot = originalPot;
+          console.log(`Restoring original pot value: ${originalPot}`);
+        }
+      }
+
       // Get players who haven't folded
       const activePlayers = game.players.filter(
         (p) => p.isActive && !p.hasFolded
       );
-  
+
       // Prepare hands for evaluation
       const playerHands = activePlayers.map((player) => ({
         playerId: player.user.toString(),
@@ -788,10 +914,10 @@ const gameLogic = {
         holeCards: player.hand,
         communityCards: game.communityCards,
       }));
-  
+
       // Determine winner(s)
       const result = handEvaluator.determineWinners(playerHands);
-  
+
       // Log detailed results for debugging
       console.log("Showdown results determined:");
       console.log(
@@ -800,11 +926,15 @@ const gameLogic = {
       console.log(
         `- Hand types: ${result.winners.map((w) => w.handName).join(", ")}`
       );
-  
+
+      // Store the pot value for the result BEFORE it gets reset by awardPot
+      const potForResult = game.pot;
+      console.log(`Pot value for result before awarding: ${potForResult}`);
+
       // Store hand results in game history
       game.handResults.push({
         winners: result.winners.map((w) => w.playerId),
-        pot: game.pot,
+        pot: potForResult, // Use the correct pot value
         hands: result.allHands.map((h) => ({
           player: h.username,
           cards: h.hand,
@@ -813,14 +943,17 @@ const gameLogic = {
         communityCards: game.communityCards,
         timestamp: Date.now(),
       });
-  
+
       // Award pot to winner(s) - this handles database updates too
       const winnerPlayers = result.winners.map((w) =>
         this.getPlayerById(game, w.playerId)
       );
-  
+
       await this.awardPot(game, winnerPlayers);
-  
+
+      // Make sure to save the game after awarding pot
+      await game.save();
+
       // Also update all other players' balances to the database
       for (const player of game.players) {
         // Skip winners as they've already been updated
@@ -831,7 +964,7 @@ const gameLogic = {
         ) {
           continue;
         }
-  
+
         try {
           // Update the loser's balance in the database
           await User.findByIdAndUpdate(
@@ -846,7 +979,7 @@ const gameLogic = {
           );
         }
       }
-  
+
       // Prepare detailed winner data with proper error handling
       const safeWinners = result.winners.map((w) => {
         const player = this.getPlayerById(game, w.playerId);
@@ -857,17 +990,31 @@ const gameLogic = {
           handName: w.handName || "Unknown Hand",
         };
       });
-  
+
       // Prepare data for all players' cards (including losers)
-      const allPlayersCards = activePlayers.map(player => ({
+      const allPlayersCards = activePlayers.map((player) => ({
         playerId: player.user.toString(),
         username: player.username || "Unknown Player",
         hand: Array.isArray(player.hand) ? player.hand : [],
-        isWinner: result.winners.some(w => w.playerId === player.user.toString()),
-        handName: result.allHands.find(h => h.playerId === player.user.toString())?.handName || "Unknown Hand"
+        isWinner: result.winners.some(
+          (w) => w.playerId === player.user.toString()
+        ),
+        handName:
+          result.allHands.find((h) => h.playerId === player.user.toString())
+            ?.handName || "Unknown Hand",
       }));
-  
-      // Return processed result with all players' cards
+
+      // Log what's being returned
+      console.log(
+        `Showdown results - Winners: ${safeWinners.length}, Pot: ${potForResult}`
+      );
+      console.log(
+        `Showdown winners: ${safeWinners
+          .map((w) => `${w.username} with ${w.handName}`)
+          .join(", ")}`
+      );
+
+      // Return processed result with all players' cards and the correct pot value
       return {
         winners: safeWinners,
         hands: result.allHands.map((h) => ({
@@ -877,7 +1024,9 @@ const gameLogic = {
           handName: h.handName || "Unknown Hand",
         })),
         allPlayersCards: allPlayersCards,
-        communityCards: game.communityCards
+        communityCards: game.communityCards,
+        // CRITICAL FIX: Use the stored pot value instead of the current game.pot (which is now 0)
+        pot: potForResult,
       };
     } catch (error) {
       console.error("Error in processShowdown:", error);
@@ -920,32 +1069,44 @@ const gameLogic = {
       game.pot = 0;
       game.currentBet = 0;
       game.communityCards = [];
-  
+
       // IMPORTANT FIX: Create a completely new shuffled deck for the next hand
       const cardDeck = require("./cardDeck");
       game.deck = cardDeck.createDeck(); // This creates a fresh, shuffled deck
-  
+
       // Reset player states but keep their total chips
       game.players.forEach((player) => {
         player.hand = [];
-        player.chips = 0;
+        player.chips = 0; // Reset chips committed to pot
         player.hasFolded = false;
         player.hasActed = false;
         player.isAllIn = false;
         player.isReady = false; // Reset ready status for next hand
       });
-  
-      // Check which players have zero chips
-      const playersToRemove = [];
-      game.players = game.players.filter((player, index) => {
-        if (player.totalChips <= 0) {
-          player.isActive = false;
-          playersToRemove.push(index);
-          return false;
+
+      // Sync player balances with database (important fix)
+      for (const player of game.players) {
+        try {
+          if (player.isActive) {
+            // Make sure database reflects the current game state
+            await User.findByIdAndUpdate(
+              player.user,
+              { $set: { balance: player.totalChips } },
+              { new: true }
+            );
+
+            console.log(
+              `Updated ${player.username}'s database balance to ${player.totalChips}`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `Error updating database for player ${player.username}:`,
+            err
+          );
         }
-        return true;
-      });
-  
+      }
+
       // Check if there are enough players to continue
       if (game.players.filter((p) => p.isActive).length < 2) {
         game.status = "completed";
@@ -957,7 +1118,7 @@ const gameLogic = {
       } else {
         // Set status to 'waiting' to require players to ready up again
         game.status = "waiting";
-        
+
         // Add to action history
         game.actionHistory.push({
           player: "System",
@@ -966,7 +1127,7 @@ const gameLogic = {
           timestamp: Date.now(),
         });
       }
-  
+
       // Use findByIdAndUpdate instead of direct save to avoid versioning conflicts
       try {
         // Create a clean object for update to avoid mongoose versioning issues
@@ -980,50 +1141,52 @@ const gameLogic = {
           actionHistory: game.actionHistory,
           deck: game.deck, // Include the fresh deck in the update
         };
-  
+
         // Update the game in the database using findByIdAndUpdate
         const updatedGame = await Game.findByIdAndUpdate(
           game._id,
           { $set: updateData },
           { new: true, runValidators: true }
         );
-  
+
         if (!updatedGame) {
           throw new Error(`Game with ID ${game._id} not found during update`);
         }
-  
+
         console.log(
           `Game ${updatedGame.gameId} prepared for next hand with a fresh deck of ${updatedGame.deck.length} cards`
         );
-        console.log(`Game status set to ${updatedGame.status} - waiting for players to ready up`);
-  
+        console.log(
+          `Game status set to ${updatedGame.status} - waiting for players to ready up`
+        );
+
         // Log deck stats for debugging
         if (updatedGame.deck) {
           const suitCounts = {};
           const rankCounts = {};
-  
+
           updatedGame.deck.forEach((card) => {
             suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
             rankCounts[card.rank] = (rankCounts[card.rank] || 0) + 1;
           });
-  
+
           console.log("Deck statistics:", {
             deckSize: updatedGame.deck.length,
             suits: suitCounts,
             ranks: rankCounts,
           });
         }
-  
+
         return updatedGame;
       } catch (updateError) {
         console.error("Error updating game for next hand:", updateError);
-  
+
         // Fallback: Try to fetch a fresh copy of the game
         const freshGame = await Game.findById(game._id);
         if (!freshGame) {
           throw new Error(`Could not find game with ID ${game._id}`);
         }
-  
+
         // Apply our changes to the fresh copy
         freshGame.bettingRound = "preflop";
         freshGame.pot = 0;
@@ -1032,12 +1195,12 @@ const gameLogic = {
         freshGame.players = game.players;
         freshGame.status = "waiting"; // Set status to waiting
         freshGame.deck = cardDeck.createDeck(); // Create a fresh deck here too
-  
+
         // Reset ready status in the fresh copy
-        freshGame.players.forEach(player => {
+        freshGame.players.forEach((player) => {
           player.isReady = false;
         });
-  
+
         // Add our history entry to the fresh copy
         if (game.status === "completed") {
           freshGame.actionHistory.push({
@@ -1053,7 +1216,7 @@ const gameLogic = {
             timestamp: Date.now(),
           });
         }
-  
+
         // Save the fresh copy
         await freshGame.save();
         console.log(

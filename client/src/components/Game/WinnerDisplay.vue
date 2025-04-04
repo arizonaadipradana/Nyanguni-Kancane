@@ -56,15 +56,19 @@
 
       <!-- Winners Section -->
       <div class="winner-info" v-if="winners && winners.length > 0">
-        <div class="winner-pot">
-          <span v-if="winners.length === 1">
-            {{ winners[0].username }} won {{ pot }} chips
-          </span>
-          <span v-else>
-            Split pot: {{winners.map(w => w.username).join(', ')}} each won {{ splitPotAmount(winners[0]) }} chips
-          </span>
-        </div>
-      </div>
+    <div class="winner-pot">
+      <span v-if="winners.length === 1 && pot > 0">
+        {{ winners[0].username }} won {{ pot }} chips
+      </span>
+      <span v-else-if="winners.length > 1 && pot > 0">
+        Split pot: {{winners.map(w => w.username).join(', ')}} each won {{ splitPotAmount(winners[0]) }} chips
+      </span>
+      <span v-else-if="pot <= 0" class="error-message">
+        Error: Invalid pot amount of {{ pot }} chips.
+        Please refresh the game page.
+      </span>
+    </div>
+  </div>
 
       <!-- Ready Up Section -->
       <div class="ready-up-section">
@@ -637,6 +641,15 @@ export default {
 .community-card[data-suit="hearts"],
 .community-card[data-suit="diamonds"] {
   color: red;
+}
+
+.error-message {
+  color: #ff6b6b;
+  font-weight: bold;
+  background-color: rgba(255, 0, 0, 0.1);
+  padding: 5px 10px;
+  border-radius: 4px;
+  margin-top: 10px;
 }
 
 @keyframes pulse {

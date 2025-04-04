@@ -677,10 +677,20 @@ export default {
     },
 
     // Handle when winner display countdown completes
-    handleWinnerDisplayComplete() {
-      console.log('Winner display countdown complete');
+    handleWinnerDisplayClose() {
+      console.log('Winner display closed');
       this.showWinnerDisplay = false;
       this.handWinners = [];
+
+      // Request a game state update to ensure UI is up to date
+      this.requestStateUpdate();
+
+      // After short delay, try to fetch user data to update balances
+      setTimeout(() => {
+        this.$store.dispatch('fetchUserData')
+          .then(() => console.log("User data refreshed after hand"))
+          .catch(err => console.error("Failed to refresh user data:", err));
+      }, 500);
     },
     handleHandResult(result) {
       console.log("Received hand result:", result);
@@ -777,11 +787,23 @@ export default {
       console.log('Starting next hand...');
       this.addToLog('Starting next hand...');
 
-      // Tell server to start the next hand with a new socket event
-      SocketService.gameSocket?.emit('startNextHand', {
-        gameId: this.gameId,
-        userId: this.currentUser.id
-      });
+      // Refresh user data first to ensure we have accurate balances
+      this.$store.dispatch('fetchUserData')
+        .then(() => {
+          // Then tell server to start the next hand
+          SocketService.gameSocket?.emit('startNextHand', {
+            gameId: this.gameId,
+            userId: this.currentUser.id
+          });
+        })
+        .catch(err => {
+          console.error("Failed to refresh user data before next hand:", err);
+          // Still try to start the hand even if user data refresh fails
+          SocketService.gameSocket?.emit('startNextHand', {
+            gameId: this.gameId,
+            userId: this.currentUser.id
+          });
+        });
     },
     handleGameStateChange(gameState) {
       // If game state changes from active to waiting, make sure to end any active turns
