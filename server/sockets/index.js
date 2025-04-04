@@ -3,6 +3,7 @@ const gameLogic = require("../utils/gameLogic");
 const Game = require("../models/Game");
 const User = require("../models/User");
 const mongoose = require("mongoose");
+const { registerChatHandlers } = require('./chatHandlers');
 
 // Map user IDs to socket IDs
 const userSockets = new Map();
@@ -11,6 +12,8 @@ const gameRooms = new Map();
 module.exports = (io) => {
   // Game namespace
   const gameIo = io.of("/game");
+  
+  registerChatHandlers(io);
 
   /**
    * Safely compare MongoDB ObjectIDs

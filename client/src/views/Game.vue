@@ -47,6 +47,7 @@
 
       <!-- Game chat/log -->
       <GameLog :gameLog="gameLog" />
+      <GameChat :gameId="gameId" :currentUser="currentUser" />
     </div>
 
     <!-- Debug toggle button -->
@@ -77,6 +78,7 @@ import ActionTimer from '@/components/Game/ActionTimer.vue';
 import WinnerDisplay from '@/components/Game/WinnerDisplay.vue';
 import PlayerReadyComponent from '@/components/Game/PlayerReadyComponent.vue';
 import PokerHandEvaluator from '@/utils/PokerHandEvaluator';
+import GameChat from '@/components/Game/GameChat.vue';
 
 export default {
   name: 'Game',
@@ -92,6 +94,7 @@ export default {
     ActionTimer,
     WinnerDisplay,
     PlayerReadyComponent,
+    GameChat,
   },
 
   data() {

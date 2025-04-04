@@ -25,13 +25,14 @@
   
   <style scoped>
   .game-log {
-    grid-area: log;
-    background-color: #2a2a2a;
-    border-radius: 8px;
-    padding: 15px;
-    max-height: 200px;
-    overflow-y: auto;
-  }
+  max-height: 500px; /* Consistent height */
+  overflow-y: auto;
+  background-color: #2a2a2a;
+  border-radius: 8px;
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+}
   
   .game-log h3 {
     margin-top: 0;
@@ -40,7 +41,7 @@
   }
   
   .log-entries {
-    max-height: 150px;
+    max-height: 200px;
     overflow-y: auto;
   }
   
