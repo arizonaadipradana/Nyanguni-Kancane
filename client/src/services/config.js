@@ -1,5 +1,5 @@
 // client/src/services/config.js
-// Modified version for accessing the API through ngrok
+// Updated version for more reliable ngrok connection
 
 import axios from "axios";
 
@@ -10,18 +10,16 @@ let lastFetchTime = 0;
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Load application configuration from the server with better error handling
+ * Load application configuration from the server with improved error handling
  * @param {boolean} forceRefresh - Force a refresh of the configuration
  * @returns {Promise<Object>} Configuration object
  */
 export const loadConfig = async (forceRefresh = false) => {
-  // Return cached config if it's recent and not forced to refresh
   const now = Date.now();
   if (config && !forceRefresh && now - lastFetchTime < CACHE_DURATION) {
     return config;
   }
 
-  // If already loading, return the existing promise
   if (isLoading) {
     return loadPromise;
   }
@@ -31,72 +29,141 @@ export const loadConfig = async (forceRefresh = false) => {
   loadPromise = new Promise((resolve) => {
     const fetchConfig = async () => {
       try {
-        // Remove ngrok URL from localStorage if it's causing issues
-        const useNgrok = localStorage.getItem("useNgrok") === "true";
-        if (!useNgrok && localStorage.getItem("ngrokUrl")) {
-          console.log("Removing saved ngrok URL from localStorage");
-          localStorage.removeItem("ngrokUrl");
-        }
-
-        // Start with direct server communication
-        let configUrl = `${window.location.origin}/api/config`;
-        console.log("Loading configuration from current origin:", configUrl);
-
+        // First try loading from current origin
+        const originUrl = `${window.location.origin}/api/config`;
+        console.log('Attempting to load config from origin:', originUrl);
+        
         try {
-          const response = await axios.get(configUrl, {
+          const response = await axios.get(originUrl, {
             timeout: 5000,
-            headers: { "Cache-Control": "no-cache" },
+            headers: { "Cache-Control": "no-cache" }
           });
 
           config = response.data;
-          console.log("Application configuration loaded:", config);
-
-          // Only save ngrok URL if useNgrok is true
-          if (useNgrok && config.isNgrok && config.apiUrl) {
-            localStorage.setItem("ngrokUrl", config.apiUrl);
-            console.log("Saved ngrok URL to localStorage:", config.apiUrl);
+          console.log('Config loaded from origin successfully:', config);
+          
+          // Store the ngrok URL if available
+          if (config.isNgrok && config.apiUrl) {
+            localStorage.setItem('ngrokUrl', config.apiUrl);
+            localStorage.setItem('lastKnownNgrokHost', new URL(config.apiUrl).hostname);
+            console.log('Saved ngrok URL:', config.apiUrl);
           }
-
+          
           lastFetchTime = Date.now();
           isLoading = false;
           resolve(config);
           return;
         } catch (originError) {
-          console.warn(
-            "Failed to load from origin, will try fallback:",
-            originError
-          );
+          console.warn('Failed to load config from origin:', originError);
+          
+          // If origin failed, try fallback approaches
+          // First check: Are we on ngrok now?
+          const isCurrentlyOnNgrok = window.location.hostname.includes('ngrok-free.app');
+          
+          // Next try stored ngrok URL if we have one
+          const storedNgrokUrl = localStorage.getItem('ngrokUrl');
+          if (storedNgrokUrl) {
+            try {
+              console.log('Trying stored ngrok URL:', storedNgrokUrl);
+              const ngrokResponse = await axios.get(`${storedNgrokUrl}/api/config`, {
+                timeout: 5000,
+                headers: { "Cache-Control": "no-cache" }
+              });
+              
+              config = ngrokResponse.data;
+              console.log('Config loaded from stored ngrok URL:', config);
+              
+              // Update stored URL if it changed
+              if (config.isNgrok && config.apiUrl) {
+                localStorage.setItem('ngrokUrl', config.apiUrl);
+                localStorage.setItem('lastKnownNgrokHost', new URL(config.apiUrl).hostname);
+              }
+              
+              lastFetchTime = Date.now();
+              isLoading = false;
+              resolve(config);
+              return;
+            } catch (ngrokError) {
+              console.warn('Failed to load from stored ngrok URL:', ngrokError);
+            }
+          }
+          
+          // If we're on ngrok but previous attempts failed, it might be a new URL
+          if (isCurrentlyOnNgrok) {
+            // Use the current location as API URL since we're on ngrok
+            const currentNgrokUrl = window.location.origin;
+            console.log('Using current ngrok URL as API URL:', currentNgrokUrl);
+            
+            config = {
+              apiUrl: currentNgrokUrl,
+              socketUrl: currentNgrokUrl,
+              env: 'development',
+              version: '1.0.0',
+              isNgrok: true,
+              isFallback: true
+            };
+            
+            // Store this new ngrok URL
+            localStorage.setItem('ngrokUrl', currentNgrokUrl);
+            localStorage.setItem('lastKnownNgrokHost', window.location.hostname);
+            
+            // Try to validate this URL works
+            try {
+              await axios.get(`${currentNgrokUrl}/api/test`, { timeout: 3000 });
+              console.log('Validated current ngrok URL works');
+            } catch (e) {
+              console.warn('Current ngrok URL validation failed, using anyway:', e);
+            }
+            
+            lastFetchTime = Date.now();
+            isLoading = false;
+            resolve(config);
+            return;
+          }
+          
+          // Final fallback - try localhost
+          try {
+            console.log('Trying localhost fallback');
+            const localhostUrl = 'http://localhost:5000';
+            const localhostResponse = await axios.get(`${localhostUrl}/api/config`, {
+              timeout: 3000,
+              headers: { "Cache-Control": "no-cache" }
+            });
+            
+            config = localhostResponse.data;
+            console.log('Config loaded from localhost:', config);
+            
+            lastFetchTime = Date.now();
+            isLoading = false;
+            resolve(config);
+            return;
+          } catch (localhostError) {
+            console.warn('Failed to load from localhost:', localhostError);
+          }
         }
-
-        // Create fallback config with improved URL determination
-        config = {
-          apiUrl: determineServerUrl(),
-          socketUrl: determineServerUrl(),
-          env: "development",
-          version: "1.0.0",
-          isFallback: true,
-        };
-
-        console.log("Using fallback configuration:", config);
-        lastFetchTime = Date.now();
-
-        isLoading = false;
-        resolve(config);
-      } catch (error) {
-        console.error("Failed to load configuration, using defaults:", error);
-
-        // Create simple fallback config with current origin
+        
+        // Ultimate fallback if all else fails
+        console.warn('All config loading attempts failed, using default values');
         config = {
           apiUrl: window.location.origin,
           socketUrl: window.location.origin,
-          env: "development",
-          version: "1.0.0",
-          isFallback: true,
+          env: 'development',
+          version: '1.0.0',
+          isFallback: true
         };
-
-        console.log("Using emergency fallback configuration:", config);
+        
         lastFetchTime = Date.now();
-
+        isLoading = false;
+        resolve(config);
+      } catch (error) {
+        console.error('Unhandled error in config loading:', error);
+        config = {
+          apiUrl: window.location.origin,
+          socketUrl: window.location.origin,
+          env: 'development',
+          version: '1.0.0',
+          isFallback: true
+        };
         isLoading = false;
         resolve(config);
       }
@@ -107,45 +174,6 @@ export const loadConfig = async (forceRefresh = false) => {
 
   return loadPromise;
 };
-
-/**
- * Intelligently determine the server URL based on client URL
- * @returns {string} Best guess of server URL
- */
-function determineServerUrl() {
-  const hostname = window.location.hostname;
-
-  // Use the current origin as default - most reliable for development
-  const currentOrigin = window.location.origin;
-
-  // Only use ngrok if explicitly enabled
-  const useNgrok = localStorage.getItem("useNgrok") === "true";
-  if (useNgrok) {
-    // Try to get saved ngrok URL if enabled
-    const savedNgrokUrl = localStorage.getItem("ngrokUrl");
-    if (savedNgrokUrl) {
-      return savedNgrokUrl;
-    }
-  }
-
-  // For development with devices on local network, handle possible proxy setup
-  if (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname.match(/192\.168\./) ||
-    hostname.match(/10\./)
-  ) {
-    // If we're not running on port 5000, we're likely using Vue devserver with proxy
-    if (window.location.port !== "5000") { // Updated from 3000 to 5000
-      console.log("Using current origin with proxy:", currentOrigin);
-      return currentOrigin;
-    }
-    return currentOrigin;
-  }
-
-  // For production, assume API is on same domain
-  return currentOrigin;
-}
 
 /**
  * Reset the loaded configuration (useful for testing)
@@ -174,4 +202,12 @@ export const getConfigValue = async (key, defaultValue = null) => {
  */
 export const refreshConfig = async () => {
   return loadConfig(true);
+};
+
+/**
+ * Check if we're currently running through ngrok
+ * @returns {boolean} True if the current hostname is an ngrok domain
+ */
+export const isNgrokEnvironment = () => {
+  return window.location.hostname.includes('ngrok-free.app');
 };

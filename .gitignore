@@ -36,3 +36,4 @@ ngrok-info.json
 
 # OS files
 .DS_Store
+.qodo

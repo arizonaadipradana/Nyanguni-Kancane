@@ -83,6 +83,59 @@ async function setupNgrok(port, options = {}) {
 }
 
 /**
+ * Setup ngrok tunnel and make it available globally
+ * @param {number} port - Port to expose
+ * @returns {Promise<string>} The public ngrok URL
+ */
+exports.setupNgrok = async (port) => {
+  try {
+    // Connect to ngrok
+    const url = await ngrok.connect({
+      proto: 'http',
+      addr: port,
+      region: 'us', // Choose your region
+      // Add your authtoken if you have one
+      // authtoken: process.env.NGROK_AUTH_TOKEN,
+      onStatusChange: status => {
+        console.log(`Ngrok status changed: ${status}`);
+      },
+      onLogEvent: log => {
+        if (log.includes('error') || log.includes('warn')) {
+          console.log(`Ngrok log: ${log}`);
+        }
+      }
+    });
+
+    // Store URL globally so other modules can access it
+    global.ngrokUrl = url;
+    console.log(`Ngrok tunnel established: ${url}`);
+
+    // Create a file that stores the ngrok URL for the client to read
+    const publicDir = path.join(__dirname, '..', 'public');
+    if (!fs.existsSync(publicDir)) {
+      fs.mkdirSync(publicDir, { recursive: true });
+    }
+
+    const ngrokInfoPath = path.join(publicDir, 'ngrok-info.json');
+    fs.writeFileSync(
+      ngrokInfoPath,
+      JSON.stringify({ 
+        url, 
+        timestamp: new Date().toISOString() 
+      }, null, 2)
+    );
+
+    // Update the static config file
+    updateStaticConfig(url);
+
+    return url;
+  } catch (error) {
+    console.error('Error setting up ngrok:', error);
+    throw error;
+  }
+};
+
+/**
  * Close the ngrok tunnel
  */
 async function closeNgrok() {

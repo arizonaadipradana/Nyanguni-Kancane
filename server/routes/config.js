@@ -11,21 +11,29 @@ const fs = require('fs');
  * @access  Public
  */
 router.get('/', (req, res) => {
-  // Use local URLs instead of ngrok
-  const serverUrl = 'http://localhost:5000'; // Updated from 3000 to 5000
-  const clientUrl = 'http://localhost:8080';
+  // Check if ngrok URL is available globally from ngrok-setup.js
+  const ngrokUrl = global.ngrokUrl;
   
   // Get client origin from request headers for CORS support
-  const clientOrigin = req.headers.origin || clientUrl;
+  const clientOrigin = req.headers.origin || '';
+  const isClientOnNgrok = clientOrigin.includes('ngrok-free.app');
   
-  // Game rules
-  const rules = {
-    minPlayers: 2,
-    maxPlayers: 8,
-    startingChips: 1000,
-    chipValue: 500, // rupiah per chip
-    minBet: 1
-  };
+  // Use appropriate server and client URLs based on the environment
+  let serverUrl, clientUrl;
+  
+  if (ngrokUrl) {
+    // If we have an ngrok URL, use it
+    serverUrl = ngrokUrl;
+    clientUrl = ngrokUrl;
+  } else if (isClientOnNgrok) {
+    // If client is on ngrok but we don't have an ngrok URL, use client origin
+    serverUrl = clientOrigin;
+    clientUrl = clientOrigin;
+  } else {
+    // Fallback to localhost URLs
+    serverUrl = 'http://localhost:5000';
+    clientUrl = 'http://localhost:8080';
+  }
   
   // Log the source of the request
   console.log(`Config requested from: ${clientOrigin}`);
@@ -36,10 +44,16 @@ router.get('/', (req, res) => {
     socketUrl: serverUrl,
     clientUrl: clientUrl,
     requestedFrom: clientOrigin,
-    isNgrok: false,
+    isNgrok: !!ngrokUrl || isClientOnNgrok,
     env: process.env.NODE_ENV || 'development',
     version: process.env.npm_package_version || '1.0.0',
-    rules: rules,
+    rules: {
+      minPlayers: 2,
+      maxPlayers: 8,
+      startingChips: 1000,
+      chipValue: 500,
+      minBet: 1
+    },
     timestamp: new Date().toISOString()
   };
   
@@ -52,6 +66,39 @@ router.get('/', (req, res) => {
   });
   
   res.json(configData);
+});
+
+/**
+ * @route   GET api/config/test-connection
+ * @desc    Test connection and CORS configuration
+ * @access  Public
+ */
+router.get('/test-connection', (req, res) => {
+  // Capture all request details for diagnostics
+  const requestInfo = {
+    headers: req.headers,
+    origin: req.headers.origin || 'Unknown',
+    host: req.headers.host,
+    protocol: req.protocol,
+    method: req.method,
+    path: req.path,
+    ngrokUrl: global.ngrokUrl || 'Not configured',
+    serverTime: new Date().toISOString(),
+    corsEnabled: true
+  };
+  
+  console.log('Connection test request from:', requestInfo.origin);
+  
+  res.json({
+    success: true,
+    message: 'Connection test successful',
+    serverInfo: {
+      environment: process.env.NODE_ENV || 'development',
+      ngrokEnabled: !!global.ngrokUrl,
+      ngrokUrl: global.ngrokUrl
+    },
+    clientInfo: requestInfo
+  });
 });
 
 // Update static config file for initial loading
@@ -72,13 +119,31 @@ function updateStaticConfig(configData) {
   }
 }
 
-// Update static config with local settings
+// Update static config with local settings & ngrok if available
 updateStaticConfig({
-  apiUrl: 'http://localhost:5000', // Updated from 3000 to 5000
-  socketUrl: 'http://localhost:5000', // Updated from 3000 to 5000
+  apiUrl: global.ngrokUrl || 'http://localhost:5000',
+  socketUrl: global.ngrokUrl || 'http://localhost:5000',
   env: process.env.NODE_ENV || 'development',
   version: process.env.npm_package_version || '1.0.0',
+  isNgrok: !!global.ngrokUrl,
   timestamp: new Date().toISOString()
 });
+
+// Add watcher to update static config when ngrok URL changes
+if (process.env.NODE_ENV !== 'production') {
+  // Check every 10 seconds if ngrok URL has changed and update static config
+  setInterval(() => {
+    if (global.ngrokUrl) {
+      updateStaticConfig({
+        apiUrl: global.ngrokUrl,
+        socketUrl: global.ngrokUrl,
+        env: process.env.NODE_ENV || 'development',
+        version: process.env.npm_package_version || '1.0.0',
+        isNgrok: true,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }, 10000);
+}
 
 module.exports = router;

@@ -11,6 +11,7 @@ const path = require('path');
 const mongoose = require('mongoose');
 const errorHandler = require('./middleware/error');
 const connectDB = require('./utils/db');
+const { setupNgrok } = require('./utils/ngrok-setup');
 
 // Load environment variables
 dotenv.config();
@@ -29,30 +30,17 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps, curl, etc)
     if (!origin) return callback(null, true);
     
-    // Allow all localhost and local network origins
+    // Allow all localhost, local network origins, and any ngrok-free.app subdomain
     if (
       origin.startsWith('http://localhost') || 
       origin.startsWith('http://127.0.0.1') ||
+      origin.startsWith('https://localhost') || 
+      origin.startsWith('https://127.0.0.1') ||
       origin.startsWith('http://192.168.') ||
       origin.startsWith('http://10.') ||
       origin.includes('ngrok-free.app')
     ) {
       return callback(null, true);
-    }
-    
-    // For production
-    if (process.env.NODE_ENV === 'production') {
-      // Extract hostname from origin
-      try {
-        const hostname = new URL(origin).hostname;
-        
-        // Check if origin matches our allowed domains
-        if (hostname === 'yourdomain.com' || hostname.endsWith('.yourdomain.com')) {
-          return callback(null, true);
-        }
-      } catch (e) {
-        console.error('Error parsing origin URL:', e);
-      }
     }
     
     console.log(`CORS blocked request from origin: ${origin}`);
@@ -90,20 +78,47 @@ app.use((req, res, next) => {
   next();
 });
 
-// Socket.io setup with simplified CORS
+// Socket.io setup with improved CORS and connection handling
 const io = socketIO(server, {
   cors: {
-    origin: true, // Match Express CORS settings
+    origin: function(origin, callback) {
+      // Allow all origins
+      callback(null, true);
+    },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With'],
   },
   transports: ['websocket', 'polling'],
-  pingTimeout: 10000, // Increase timeout for better connection stability
-  pingInterval: 5000
+  pingTimeout: 30000, // Increased timeout for better stability
+  pingInterval: 10000,
+  connectTimeout: 30000,
+  allowEIO3: true // Enable compatibility with older clients
 });
 
-// Initialize sockets
+// A simple ping handler for testing connectivity
+io.on('connection', (socket) => {
+  console.log('New socket connection:', socket.id, 'from', socket.handshake.headers.origin);
+  
+  socket.on('ping', (data) => {
+    console.log('Received ping from client:', socket.id, data);
+    socket.emit('pong', { 
+      serverTime: new Date().toISOString(),
+      received: data,
+      socketId: socket.id
+    });
+  });
+  
+  socket.on('disconnect', (reason) => {
+    console.log('Socket disconnected:', socket.id, 'reason:', reason);
+  });
+  
+  socket.on('error', (error) => {
+    console.error('Socket error:', socket.id, error);
+  });
+});
+
+// Initialize game sockets
 const initializeSocket = require('./sockets');
 initializeSocket(io);
 
@@ -136,7 +151,7 @@ app.get('/api', (req, res) => {
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
     clientOrigin: req.headers.origin || 'Unknown',
-    allowedOrigins: ['http://localhost:8080', 'http://127.0.0.1:8080'],
+    allowedOrigins: ['http://localhost:8080', 'http://127.0.0.1:8080',],
     timestamp: new Date().toISOString()
   });
 });
@@ -232,41 +247,22 @@ app.get('/', (req, res) => {
 app.use(errorHandler);
 
 // Server setup
-const PORT = process.env.PORT || config.get('port') || 5000;
+const PORT = process.env.PORT || 5000;
 
-server.listen(PORT, async () => {
+
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Display MongoDB connection status
-  const dbStatus = mongoose.connection.readyState;
-  const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
-  console.log(`MongoDB Status: ${dbStates[dbStatus]}`);
-  
-  // Start ngrok if enabled in development
-  if (process.env.NODE_ENV === 'development' && process.env.USE_NGROK === 'true') {
-    try {
-      // Use the dedicated setup module for better organization
-      const { setupNgrok } = require('./utils/ngrok-setup');
-      const url = await setupNgrok(PORT);
-      
-      // The ngrok URL is now stored in global.ngrokUrl
-      // and can be accessed from other parts of the application
-      
-      // Log additional server information
-      console.log(`
-      ===============================================
-        Server Information
-      -----------------------------------------------
-        🌐 Public URL: ${url}
-        🌐 Local URL: http://localhost:${PORT}
-        📁 Environment: ${process.env.NODE_ENV}
-        🔌 Socket.IO enabled: Yes
-      ===============================================
-      `);
-    } catch (err) {
-      console.error('Error starting ngrok:', err);
-      console.log('Continuing without external access URL');
-    }
+  // Start ngrok tunnel in development or when explicitly enabled
+  if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_NGROK === 'true') {
+    setupNgrok(PORT)
+      .then(url => {
+        console.log(`Ngrok tunnel established at: ${url}`);
+        console.log(`Share this URL to let others access your game!`);
+      })
+      .catch(err => {
+        console.error('Error starting ngrok:', err);
+      });
   }
 });
 
