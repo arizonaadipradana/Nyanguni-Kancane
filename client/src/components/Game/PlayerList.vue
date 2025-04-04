@@ -68,6 +68,7 @@ export default {
       updateKey: 0, // Add an update key to force re-rendering
       lastHandUpdate: Date.now(),
       currentHandTimestamp: 0,
+      lastKnownHandState: [],
     };
   },
 
@@ -85,6 +86,39 @@ export default {
       // Make sure playerHand is an array
       if (!this.playerHand || !Array.isArray(this.playerHand)) {
         console.warn('Invalid playerHand in PlayerList component:', this.playerHand);
+        return [];
+      }
+
+      // Add reactivity by creating new card objects with keys that will
+      // trigger Vue's reactivity system
+      return this.playerHand.map(card => ({
+        ...card,
+        _key: `${card.rank}-${card.suit}-${this.lastHandUpdate}-${this.updateKey}`
+      }));
+    },
+    //A computed property to handle player hand display
+    displayPlayerHand() {
+      // Make sure playerHand is an array
+      if (!this.playerHand || !Array.isArray(this.playerHand)) {
+        console.warn('Invalid playerHand in PlayerList component:', this.playerHand);
+
+        // If we don't have a current hand but have a last known state and game is in waiting state,
+        // don't show any cards
+        if (this.getCurrentGameStatus() === 'waiting' && this.lastKnownHandState.length > 0) {
+          return [];
+        }
+
+        // Otherwise return empty array
+        return [];
+      }
+
+      // If we have a new hand, update our last known state
+      if (this.playerHand.length > 0) {
+        this.lastKnownHandState = [...this.playerHand];
+      }
+
+      // If the game is waiting and the playerHand is empty, return empty to hide cards
+      if (this.getCurrentGameStatus() === 'waiting' && this.playerHand.length === 0) {
         return [];
       }
 
@@ -115,6 +149,18 @@ export default {
         }
       },
       deep: true
+    },
+    // Watch for changes in game status
+    '$parent.currentGame.status': {
+      handler(newStatus) {
+        console.log('Game status changed:', newStatus);
+        if (newStatus === 'waiting') {
+          // Delay slightly to ensure other components have finished processing
+          setTimeout(() => {
+            this.clearPlayerCards();
+          }, 100);
+        }
+      }
     }
   },
 
@@ -136,11 +182,26 @@ export default {
   },
 
   methods: {
+    // Get current game status safely
+    getCurrentGameStatus() {
+      const parent = this.$parent;
+      if (parent && parent.currentGame) {
+        return parent.currentGame.status;
+      }
+      return null;
+    },
     // Add a method to force update
+    // Force update method enhanced
     forceUpdate() {
       this.updateKey++;
       this.lastHandUpdate = Date.now();
       console.log('PlayerList forced update');
+
+      // Check if we should clear cards based on game state
+      if (this.getCurrentGameStatus() === 'waiting') {
+        // Clear visual cards when in waiting state
+        console.log('Game in waiting state, clearing card display');
+      }
     },
     updateForNewHand(timestamp) {
       if (!timestamp || timestamp <= this.currentHandTimestamp) {
@@ -154,6 +215,11 @@ export default {
 
       // Force component update
       this.$forceUpdate();
+    },
+    clearPlayerCards() {
+      this.updateKey += 20; // Large increment to ensure update
+      this.lastHandUpdate = Date.now();
+      console.log('PlayerList cleared visual card display');
     }
   }
 };

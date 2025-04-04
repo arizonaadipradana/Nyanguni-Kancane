@@ -41,7 +41,8 @@
         <WinnerDisplay :winners="handWinners" :allPlayers="allPlayersCards" :communityCards="communityCards"
           :pot="winningPot" :visible="showWinnerDisplay" :formatCard="formatCard" :currentGame="currentGame"
           :currentUser="currentUser" :gameId="gameId" :isCreator="isCreator" :isFoldWin="isFoldWin"
-          @close="handleWinnerDisplayClose" @addToLog="addToLog" @startNextHand="startNextHand" />
+          :previousPlayerHand="previousPlayerHand" @close="handleWinnerDisplayClose" @addToLog="addToLog"
+          @startNextHand="startNextHand" />
       </div>
 
       <!-- Game chat/log -->
@@ -121,6 +122,7 @@ export default {
       showWinnerDisplay: false,
       handWinners: [],
       winningPot: 0,
+      previousPlayerHand: [],
       playerHand: [],
       availableActions: [],
       allPlayersCards: [],
@@ -497,7 +499,7 @@ export default {
           'gameUpdate', 'gameStarted', 'playerJoined', 'playerLeft',
           'chatMessage', 'dealCards', 'yourTurn', 'turnChanged',
           'actionTaken', 'dealFlop', 'dealTurn', 'dealRiver',
-          'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo', 'forceCardUpdate',
+          'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo', 'forceCardUpdate', 'clearPlayerHands'
         ];
 
         events.forEach(event => {
@@ -790,8 +792,9 @@ export default {
     //A method to handle game reset
     resetGameState() {
       console.log('Resetting game state for new hand');
-      // Reset game-related state
-      this.playerHand = [];
+      // Reset game-related state but keep previousPlayerHand for reference
+      this.previousPlayerHand = [...this.playerHand]; // Store a copy of the current hand
+      this.playerHand = []; // Clear the active hand
       this.communityCards = [];
       this.isYourTurn = false;
       this.availableActions = [];
@@ -808,6 +811,28 @@ export default {
           this.$refs.playerList.forceUpdate();
         }
       });
+    },
+
+    // Handle winner display close - modified to keep the correct state flow
+    handleWinnerDisplayClose() {
+      console.log('Winner display closed');
+      this.showWinnerDisplay = false;
+
+      // Don't clear handWinners immediately to maintain visual consistency
+      // Instead, schedule a delayed clearing
+      setTimeout(() => {
+        this.handWinners = [];
+      }, 300);
+
+      // Request a game state update to ensure UI is up to date
+      this.requestStateUpdate();
+
+      // After short delay, try to fetch user data to update balances
+      setTimeout(() => {
+        this.$store.dispatch('fetchUserData')
+          .then(() => console.log("User data refreshed after hand"))
+          .catch(err => console.error("Failed to refresh user data:", err));
+      }, 500);
     },
 
     startNextHand() {

@@ -510,10 +510,9 @@ export default {
               let handDescription = "Unknown Hand";
 
               if (playerHand.length > 0) {
-                const evaluation = PokerHandEvaluator.evaluateHand(
-                  playerHand,
-                  commCards
-                );
+                const evaluation = component.evaluateHand
+                  ? component.evaluateHand(playerHand, commCards)
+                  : { type: "Unknown", description: "Unknown Hand" };
                 handType = evaluation.type;
                 handDescription = evaluation.description;
               } else if (player.handName === "Folded") {
@@ -559,6 +558,11 @@ export default {
         }
 
         component.addToLog(logMessage);
+
+        // IMPORTANT: Clear player hand to prevent it from showing during the waiting state
+        // Keep a reference for the winner display but clear it for the next hand
+        component.previousPlayerHand = [...component.playerHand];
+        component.playerHand = [];
 
         // Force UI update
         component.forceCardUpdate();
@@ -618,6 +622,35 @@ export default {
 
         // Store explicit creator status in case computed property fails
         component.explicitIsCreator = data.isCreator;
+      },
+      /**
+       * Handle clear player hands event
+       * @param {Object} data - Event data with timestamp
+       */
+      handleClearPlayerHands(data) {
+        console.log("Received clearPlayerHands event:", data);
+
+        // Store the previous hand for reference in winner display
+        component.previousPlayerHand = [...component.playerHand];
+
+        // Clear the current hand
+        component.playerHand = [];
+
+        // Add to log if needed
+        if (data && data.message) {
+          component.addToLog(data.message);
+        }
+
+        // Force UI update
+        component.$forceUpdate();
+
+        // Update the player list component if it exists
+        if (
+          component.$refs.playerList &&
+          typeof component.$refs.playerList.forceUpdate === "function"
+        ) {
+          component.$refs.playerList.forceUpdate();
+        }
       },
     };
   },

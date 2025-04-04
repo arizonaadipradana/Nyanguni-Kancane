@@ -146,6 +146,10 @@ export default {
     isFoldWin: {
       type: Boolean,
       default: false
+    },
+    previousPlayerHand: {
+      type: Array,
+      default: () => []
     }
   },
 
@@ -220,9 +224,16 @@ export default {
         // Create a new object to avoid mutating props
         const processedPlayer = { ...player };
 
+        // For the current user, use the previousPlayerHand if it's available and the player hand is empty
+        if (this.currentUser && player.playerId === this.currentUser.id &&
+          (!player.hand || player.hand.length === 0) &&
+          this.previousPlayerHand && this.previousPlayerHand.length > 0) {
+          processedPlayer.hand = this.previousPlayerHand;
+        }
+
         // Evaluate the player's hand using our evaluator
         const handEvaluation = PokerHandEvaluator.evaluateHand(
-          player.hand || [],
+          processedPlayer.hand || [],
           this.communityCards || []
         );
 
