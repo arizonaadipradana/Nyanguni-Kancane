@@ -56,19 +56,19 @@
 
       <!-- Winners Section -->
       <div class="winner-info" v-if="winners && winners.length > 0">
-    <div class="winner-pot">
-      <span v-if="winners.length === 1 && pot > 0">
-        {{ winners[0].username }} won {{ pot }} chips
-      </span>
-      <span v-else-if="winners.length > 1 && pot > 0">
-        Split pot: {{winners.map(w => w.username).join(', ')}} each won {{ splitPotAmount(winners[0]) }} chips
-      </span>
-      <span v-else-if="pot <= 0" class="error-message">
-        Error: Invalid pot amount of {{ pot }} chips.
-        Please refresh the game page.
-      </span>
-    </div>
-  </div>
+        <div class="winner-pot">
+          <span v-if="winners.length === 1 && pot > 0">
+            {{ winners[0].username }} won {{ pot }} chips
+          </span>
+          <span v-else-if="winners.length > 1 && pot > 0">
+            Split pot: {{winners.map(w => w.username).join(', ')}} each won {{ splitPotAmount(winners[0]) }} chips
+          </span>
+          <span v-else-if="!pot || pot <= 0" class="error-message">
+            Error: No pot amount available.
+            Please refresh the game page.
+          </span>
+        </div>
+      </div>
 
       <!-- Ready Up Section -->
       <div class="ready-up-section">
@@ -248,6 +248,16 @@ export default {
   methods: {
     // Calculate split pot amount for multiple winners
     splitPotAmount(winner) {
+      if (!this.pot || this.pot <= 0) {
+        console.error('Invalid pot amount:', this.pot);
+        return 0; // Return 0 to prevent NaN
+      }
+
+      if (!this.winners || this.winners.length <= 0) {
+        console.error('No winners provided for pot calculation');
+        return 0;
+      }
+
       if (this.winners.length <= 1) return this.pot;
       return Math.floor(this.pot / this.winners.length);
     },

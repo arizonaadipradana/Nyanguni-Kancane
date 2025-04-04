@@ -392,10 +392,16 @@ const gameLogic = {
             game.pot = totalChipsInPot;
           }
 
+          // IMPORTANT FIX: Store the pot value before it's reset by awardPot
+          result.potAmount = game.pot;
+          console.log(
+            `Storing pot amount ${result.potAmount} in result for handResult event`
+          );
+
           // Award pot to winner
           await this.awardPot(game, [activePlayers[0]]);
 
-          result.message = `${activePlayers[0].username} wins the pot of ${game.pot} chips`;
+          result.message = `${activePlayers[0].username} wins the pot of ${result.potAmount} chips`;
           return result;
         }
         break;
@@ -483,10 +489,16 @@ const gameLogic = {
           throw new Error("Cannot raise, must bet instead");
         }
 
-        // Minimum raise is current bet + previous raise amount (or min bet if first raise)
-        const minRaise = game.currentBet * 2;
-        if (amount < minRaise) {
-          throw new Error(`Raise must be at least ${minRaise} chips`);
+        // Calculate the minimum raise amount properly
+        const callProvidedAmount = Math.max(0, game.currentBet - player.chips);
+        const minRaiseAmount = game.currentBet + Math.max(game.minBet, 1); // Min raise is at least current bet + min bet
+        const totalMinAmount =
+          callProvidedAmount + (minRaiseAmount - game.currentBet);
+
+        if (amount < minRaiseAmount) {
+          throw new Error(
+            `Raise must be at least ${minRaiseAmount} chips (${totalMinAmount} more chips)`
+          );
         }
 
         if (amount >= player.totalChips + player.chips) {
@@ -689,10 +701,23 @@ const gameLogic = {
           totalChips: p.totalChips,
         })),
       });
-      // Set a minimum pot to prevent zero awards
-      game.pot = game.players.reduce((sum, p) => sum + p.chips, 0);
-      console.log(`Corrected pot value to ${game.pot} based on player chips`);
+
+      // Recalculate the pot based on player chips
+      const calculatedPot = game.players.reduce((sum, p) => sum + p.chips, 0);
+      if (calculatedPot > 0) {
+        console.log(
+          `Corrected pot value to ${calculatedPot} based on player chips`
+        );
+        game.pot = calculatedPot;
+      } else {
+        // If calculated pot is still 0, set a minimum value based on minimum bet
+        console.log(`Setting minimum pot value of ${game.minBet || 1}`);
+        game.pot = game.minBet || 1;
+      }
     }
+
+    // Store the original pot amount for logging
+    const originalPot = game.pot;
 
     // Split the pot evenly among winners
     const splitAmount = Math.floor(game.pot / winners.length);
@@ -715,6 +740,9 @@ const gameLogic = {
         winAmount += remainder;
       }
 
+      // Store original balance for validation
+      const originalBalance = winner.totalChips;
+
       // Update player's chips in the game
       winner.totalChips += winAmount;
 
@@ -723,6 +751,8 @@ const gameLogic = {
         userId: winner.user.toString(),
         newBalance: winner.totalChips,
         username: winner.username,
+        originalBalance: originalBalance,
+        winAmount: winAmount,
       });
 
       console.log(
@@ -734,15 +764,48 @@ const gameLogic = {
     for (const update of userUpdates) {
       try {
         console.log(
-          `Updating database balance for user ${update.username} (${update.userId}) to ${update.newBalance}`
+          `Updating database balance for user ${update.username} (${update.userId})`
+        );
+        console.log(
+          `Original balance: ${update.originalBalance}, Win amount: ${update.winAmount}, New total: ${update.newBalance}`
         );
 
-        // Update user in database with a forceful approach
-        await User.findByIdAndUpdate(
+        // Double-check the math is correct
+        if (update.newBalance !== update.originalBalance + update.winAmount) {
+          console.error(
+            `Balance calculation error: ${update.originalBalance} + ${update.winAmount} != ${update.newBalance}`
+          );
+          console.log(`Fixing balance calculation...`);
+          update.newBalance = update.originalBalance + update.winAmount;
+
+          // Also update the player object in the game
+          const playerToUpdate = winners.find(
+            (w) => w.user.toString() === update.userId
+          );
+          if (playerToUpdate) {
+            playerToUpdate.totalChips = update.newBalance;
+            console.log(
+              `Corrected ${update.username}'s balance to ${update.newBalance}`
+            );
+          }
+        }
+
+        // Update user in database with a forceful approach using $set to ensure it updates
+        const updatedUser = await User.findByIdAndUpdate(
           update.userId,
           { $set: { balance: update.newBalance } },
           { new: true }
         );
+
+        if (updatedUser) {
+          console.log(
+            `Successfully updated ${update.username}'s balance to ${updatedUser.balance}`
+          );
+        } else {
+          console.error(
+            `User ${update.userId} not found in database when updating balance`
+          );
+        }
 
         // Update games won for winners
         await this.updateGamesWon(update.userId);
@@ -757,13 +820,19 @@ const gameLogic = {
     // Reset pot
     game.pot = 0;
 
-    // Also reset player chips committed to pot
+    // Reset all player chips committed to pot
     game.players.forEach((player) => {
       player.chips = 0;
     });
 
-    // Return the updated winners for chaining
-    return winners;
+    // Make sure to save the game document
+    await game.save();
+
+    // Return the updated winners for chaining and the original pot value for reference
+    return {
+      winners,
+      originalPot,
+    };
   },
 
   // Update user balance in database
@@ -1278,46 +1347,58 @@ const gameLogic = {
 
   // Get available options for a player
   getPlayerOptions(game, playerId) {
-    const player = this.getPlayerById(game, playerId);
-    const options = [];
+    try {
+      const player = this.getPlayerById(game, playerId);
+      const options = [];
 
-    // Player can't act if they've folded or are all-in
-    if (player.hasFolded || player.isAllIn) {
+      // Player can't act if they've folded or are all-in
+      if (player.hasFolded || player.isAllIn) {
+        return options;
+      }
+
+      // Always can fold
+      options.push("fold");
+
+      // Check current bet and player's chips in pot
+      const currentBet = game.currentBet || 0;
+      const playerChipsInPot = player.chips || 0;
+      const playerRemainingChips = player.totalChips || 0;
+
+      // Check if player can check (when current bet is 0 or player has matched it)
+      if (currentBet === 0 || playerChipsInPot === currentBet) {
+        options.push("check");
+      }
+
+      // Call option (when there's a bet to match and player hasn't matched it yet)
+      if (currentBet > 0 && playerChipsInPot < currentBet) {
+        options.push("call");
+      }
+
+      // Bet option (only when there's no current bet and player has chips)
+      if (currentBet === 0 && playerRemainingChips > 0) {
+        options.push("bet");
+      }
+
+      // Raise option (only when there IS a current bet and player has enough chips to raise)
+      if (currentBet > 0 && playerRemainingChips > 0) {
+        // Make sure player has enough chips to make at least a min raise
+        const minRaiseAmount = currentBet * 2 - playerChipsInPot;
+        if (playerRemainingChips >= minRaiseAmount) {
+          options.push("raise");
+        }
+      }
+
+      // All-in option always available if player has chips
+      if (playerRemainingChips > 0) {
+        options.push("allIn");
+      }
+
       return options;
+    } catch (error) {
+      console.error(`Error getting player options: ${error.message}`);
+      // Return basic options as fallback
+      return ["fold", "check", "call"];
     }
-
-    // Always can fold
-    options.push("fold");
-
-    // Check if player can check
-    if (game.currentBet === 0 || player.chips === game.currentBet) {
-      options.push("check");
-    }
-
-    // Call option
-    if (game.currentBet > 0 && player.chips < game.currentBet) {
-      options.push("call");
-    }
-
-    // Bet option
-    if (game.currentBet === 0 && player.totalChips > 0) {
-      options.push("bet");
-    }
-
-    // Raise option
-    if (
-      game.currentBet > 0 &&
-      player.totalChips > game.currentBet - player.chips
-    ) {
-      options.push("raise");
-    }
-
-    // All-in option is always available if player has chips
-    if (player.totalChips > 0) {
-      options.push("allIn");
-    }
-
-    return options;
   },
 
   // Get sanitized game state (for sending to clients)

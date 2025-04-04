@@ -1,5 +1,6 @@
-<!-- client/src/components/Game/PlayerActions.vue -->
-<!-- Update the template to check game status -->
+// client/src/components/Game/PlayerActions.vue
+// Update the template part to improve the action button logic
+
 <template>
   <div class="player-actions">
     <h3>Your Turn</h3>
@@ -30,7 +31,7 @@
         Call {{ formattedCallAmount }} chips
       </button>
 
-      <div v-if="availableActions.includes('bet')" class="bet-action">
+      <div v-if="availableActions.includes('bet') && !availableActions.includes('raise')" class="bet-action">
         <div class="bet-input-group">
           <label for="betAmount">Bet Amount:</label>
           <div class="input-with-controls">
@@ -166,8 +167,11 @@ export default {
     },
     
     getMinRaiseAmount() {
+      // Calculate minimum raise amount properly
       const currentBet = this.currentGame ? (this.currentGame.currentBet || 0) : 0;
-      return Math.max(currentBet * 2, 2); // Minimum raise is at least double the current bet
+      
+      // Min raise is current bet doubled
+      return Math.max(currentBet * 2, 2);
     },
     
     getMaxRaiseAmount() {
@@ -306,6 +310,21 @@ export default {
         if (newStatus !== 'active' && this.isYourTurn) {
           // If game status changes and it was player's turn, emit end turn
           this.$emit('endTurn');
+        }
+      },
+      immediate: true
+    },
+    
+    // Important: Watch minimum raise amount changes to update the field
+    'currentGame.currentBet': {
+      handler() {
+        // Update raise amount when current bet changes
+        if (this.availableActions.includes('raise')) {
+          const minRaise = this.getMinRaiseAmount();
+          if (this.internalRaiseAmount < minRaise) {
+            this.internalRaiseAmount = minRaise;
+            this.updateLocalRaiseAmount();
+          }
         }
       },
       immediate: true

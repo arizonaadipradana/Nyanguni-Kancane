@@ -509,52 +509,64 @@ module.exports = (io) => {
               (p) => p.user.toString() === result.winners[0]
             );
 
-            // Make sure pot is calculated correctly for fold wins
-            // Check the actual committed chips
-            const totalChipsInPot = game.players.reduce(
-              (sum, p) => sum + p.chips,
-              0
+            // IMPORTANT FIX: Use the pot amount saved in the result object
+            // This ensures we use the pot value before it was reset to zero
+            const potAmount = result.potAmount || 0;
+
+            // Log the pot amounts for debugging
+            console.log(`Using pot amount from result: ${potAmount}`);
+            console.log(`Current game pot: ${game.pot}`);
+
+            // Make sure we have a valid pot amount
+            if (!potAmount && potAmount !== 0) {
+              console.error("No pot amount in result object:", result);
+            }
+
+            // Create a list of all active players for displaying cards
+            const allActivePlayers = game.players.filter(
+              (p) => p.isActive && p.hand && p.hand.length > 0
             );
-            if (game.pot !== totalChipsInPot) {
-              console.log(
-                `Correcting pot from ${game.pot} to ${totalChipsInPot} based on player chips`
-              );
-              game.pot = totalChipsInPot;
-            }
 
-            const winnerHand = winnerPlayer.hand || [];
-            if (winnerPlayer && winnerPlayer.user) {
-              // Log data for debugging
-              console.log(
-                `Emitting fold win for player: ${winnerPlayer.username}`
-              );
-              console.log(
-                `Hand data: ${JSON.stringify(winnerPlayer.hand || [])}`
-              );
+            // Create the allPlayersCards array for the result
+            const allPlayersCards = allActivePlayers.map((player) => {
+              const isWinner = player.user.toString() === result.winners[0];
+              return {
+                playerId: player.user.toString(),
+                username: player.username || "Unknown Player",
+                // Only include hand for the winner, empty array for others
+                hand: isWinner
+                  ? Array.isArray(player.hand)
+                    ? player.hand
+                    : []
+                  : [],
+                isWinner: isWinner,
+                handName: isWinner ? "Winner by fold" : "Folded",
+              };
+            });
 
-              gameIo.to(gameId).emit("handResult", {
-                winners: [
-                  {
-                    playerId: winnerPlayer.user.toString(),
-                    username: winnerPlayer.username || "Unknown Player",
-                    handName: "Winner by fold",
-                    hand: Array.isArray(winnerPlayer.hand)
-                      ? winnerPlayer.hand
-                      : [], // Ensure hand is an array
-                  },
-                ],
-                pot: game.pot,
-                message: result.message,
-              });
-            } else {
-              console.error(
-                "Invalid winner player data for fold win:",
-                winnerPlayer
-              );
-              gameIo.to(gameId).emit("gameError", {
-                message: "Error processing game result",
-              });
-            }
+            // Get the community cards that have been dealt so far
+            const dealtCommunityCards = game.communityCards || [];
+
+            // Emit the result with the saved pot amount
+            gameIo.to(gameId).emit("handResult", {
+              winners: [
+                {
+                  playerId: winnerPlayer.user.toString(),
+                  username: winnerPlayer.username || "Unknown Player",
+                  handName: "Winner by fold",
+                  hand: Array.isArray(winnerPlayer.hand)
+                    ? winnerPlayer.hand
+                    : [],
+                },
+              ],
+              allPlayersCards: allPlayersCards,
+              communityCards: dealtCommunityCards,
+              pot: potAmount, // Use the saved pot amount instead of game.pot
+              isFoldWin: true, // Add flag to indicate this was a fold win
+              message: `${winnerPlayer.username} wins by fold`,
+            });
+
+            // Prepare for next hand
             try {
               // Use the safe operation wrapper for handling next hand preparation
               const nextHandGame = await safeAsyncOperation(async () => {
@@ -948,6 +960,7 @@ module.exports = (io) => {
 
         // Get player info for notification
         const playerName = game.players[playerIndex].username;
+        const playerData = game.players[playerIndex];
 
         // Handle differently based on game status
         if (game.status === "waiting") {
@@ -962,33 +975,35 @@ module.exports = (io) => {
           const activePlayers = game.players.filter(
             (p) => p.isActive && !p.hasFolded
           );
+
           if (activePlayers.length < 2) {
             // End the current hand, award pot to remaining player
             if (activePlayers.length === 1) {
               // Hand ends, remaining player wins
-              result.handEnded = true;
-              result.roundEnded = true;
-              result.winners = [activePlayers[0].user.toString()];
+              const winnerPlayer = activePlayers[0];
+
+              // Define a local result object instead of using undefined global
+              const handResult = {
+                handEnded: true,
+                roundEnded: true,
+                winners: [winnerPlayer.user.toString()],
+              };
 
               // Award pot to winner
-              await this.awardPot(game, [activePlayers[0]]);
+              await gameLogic.awardPot(game, [winnerPlayer]);
 
               // Only send the community cards that have been dealt so far
               const dealtCommunityCards = game.communityCards || [];
 
-              // Find the winner player
-              const winnerPlayer = game.players.find(
-                (p) => p.user.toString() === result.winners[0]
-              );
-
-              // Get all active players at the time of the fold
+              // Create allPlayersCards format with only the winner's cards visible
               const allActivePlayers = game.players.filter(
                 (p) => p.isActive && p.hand && p.hand.length > 0
               );
 
               // Create allPlayersCards format with only the winner's cards visible
               const allPlayersCards = allActivePlayers.map((player) => {
-                const isWinner = player.user.toString() === result.winners[0];
+                const isWinner =
+                  player.user.toString() === handResult.winners[0];
                 return {
                   playerId: player.user.toString(),
                   username: player.username || "Unknown Player",
@@ -1021,9 +1036,6 @@ module.exports = (io) => {
                 isFoldWin: true, // Add flag to indicate this was a fold win
                 message: `${winnerPlayer.username} wins by fold`,
               });
-
-              result.message = `${activePlayers[0].username} wins the pot of ${game.pot} chips`;
-              return result;
             }
 
             // Check if game should end
@@ -1075,6 +1087,27 @@ module.exports = (io) => {
               // Handle round end if needed
             }
           }
+        }
+
+        // IMPORTANT FIX: Update user balance in database before player leaves
+        try {
+          // Get the player's current balance from the game
+          const currentBalance = playerData.totalChips || 0;
+
+          // Update player's balance in the database
+          await User.findByIdAndUpdate(
+            userId,
+            { balance: currentBalance },
+            { new: true }
+          );
+
+          console.log(
+            `Updated balance for leaving player ${playerName} to ${currentBalance}`
+          );
+        } catch (dbError) {
+          console.error(
+            `Error updating balance for leaving player: ${dbError.message}`
+          );
         }
 
         // Save the updated game
