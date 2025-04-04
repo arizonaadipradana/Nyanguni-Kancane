@@ -13,7 +13,7 @@
       <div class="community-cards-section">
         <h3>Community Cards</h3>
         <div v-if="isFoldWin && !displayCommunityCards.length" class="fold-win-message">
-          Hand ended early - no community cards were dealt
+          Hand ended early - other player(s) folded or left
         </div>
         <div v-else-if="!displayCommunityCards.length" class="fold-win-message">
           No community cards
@@ -57,7 +57,10 @@
       <!-- Winners Section -->
       <div class="winner-info" v-if="winners && winners.length > 0">
         <div class="winner-pot">
-          <span v-if="winners.length === 1 && pot > 0">
+          <span v-if="winners.length === 1 && isFoldWin && pot > 0">
+            {{ winners[0].username }} wins {{ pot }} chips (last player standing)
+          </span>
+          <span v-else-if="winners.length === 1 && pot > 0">
             {{ winners[0].username }} won {{ pot }} chips
           </span>
           <span v-else-if="winners.length > 1 && pot > 0">
@@ -317,7 +320,7 @@ export default {
       // Close the winner display after starting next hand
       this.closeWinnerDisplay();
     },
-    
+
     /**
      * Determine actual hand type by analyzing the player's hand combined with community cards
      * @param {Array} playerHand - The player's hole cards
@@ -660,6 +663,15 @@ export default {
   padding: 5px 10px;
   border-radius: 4px;
   margin-top: 10px;
+}
+
+.fold-win-message {
+  color: #aaa;
+  font-style: italic;
+  margin: 10px 0;
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 5px;
 }
 
 @keyframes scale-in {

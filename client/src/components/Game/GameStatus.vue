@@ -5,23 +5,17 @@
       <p>Waiting for players to join...</p>
       <p>Game ID: <strong>{{ gameId }}</strong></p>
       <p>Players: {{ currentGame.players.length }}/8</p>
-      
+
       <!-- Player ready component -->
-      <PlayerReadyComponent 
-        :currentGame="currentGame"
-        :currentUser="currentUser"
-        :gameId="gameId"
-        :isCreator="isCreator"
-        @addToLog="addToLog"
-        @playersReady="onPlayersReady"
-      />
-      
+      <PlayerReadyComponent :currentGame="currentGame" :currentUser="currentUser" :gameId="gameId"
+        :isCreator="isCreator" @addToLog="addToLog" @playersReady="onPlayersReady" />
+
       <!-- Prominent game creator section -->
       <div class="creator-info" v-if="isCreator">
         <div class="creator-badge">
           You are the game creator
         </div>
-        
+
         <div class="player-count-info">
           <p v-if="currentGame.players.length >= 2" class="ready-message">
             <span v-if="enoughPlayersReady">✅ Enough players are ready to start the game!</span>
@@ -31,20 +25,20 @@
             ⏳ Waiting for more players to join (need at least 2)
           </p>
         </div>
-        
+
         <div v-if="currentGame.players.length >= 2" class="start-game-container">
           <button @click="startGame" class="start-btn" :disabled="isStarting || !enoughPlayersReady">
             {{ isStarting ? 'Starting...' : 'START GAME' }}
           </button>
         </div>
-        
+
         <div v-else class="start-game-container">
           <button class="start-btn disabled" disabled>
             Need More Players
           </button>
         </div>
       </div>
-      
+
       <!-- Non-creator waiting message -->
       <div v-else class="waiting-message">
         <p>Waiting for game creator to start the game...</p>
@@ -78,20 +72,20 @@
         </button>
       </div>
     </div>
-    
+
     <div v-else class="completed-status">
       <p>Game completed</p>
       <button @click="returnToLobby" class="btn">
         Return to Lobby
       </button>
     </div>
-    
+
     <!-- Debug info always visible during development -->
     <div class="debug-section" v-if="isDevelopment">
       <button @click="debugVisible = !debugVisible" class="debug-toggle">
         {{ debugVisible ? 'Hide Debug Info' : 'Show Debug Info' }}
       </button>
-      
+
       <div v-if="debugVisible" class="debug-details">
         <div class="debug-item">
           <span class="debug-label">Creator:</span>
@@ -130,11 +124,11 @@ import PlayerReadyComponent from './PlayerReadyComponent.vue';
 
 export default {
   name: 'GameStatus',
-  
+
   components: {
     PlayerReadyComponent
   },
-  
+
   props: {
     currentGame: {
       type: Object,
@@ -161,7 +155,7 @@ export default {
       default: false
     }
   },
-  
+
   data() {
     return {
       debugVisible: false,
@@ -169,14 +163,14 @@ export default {
       enoughPlayersReady: false
     };
   },
-  
+
   computed: {
     readyPlayersCount() {
       if (!this.currentGame || !this.currentGame.players) return 0;
       return this.currentGame.players.filter(p => p.isReady).length;
     }
   },
-  
+
   watch: {
     // This watcher ensures that enoughPlayersReady gets updated when the game state changes
     currentGame: {
@@ -186,12 +180,12 @@ export default {
       deep: true
     }
   },
-  
+
   mounted() {
     // Check ready players on component mount
     this.checkReadyPlayers();
   },
-  
+
   methods: {
     getCurrentPlayerName() {
       if (!this.currentGame || !this.currentGame.currentTurn) return 'N/A';
@@ -203,11 +197,11 @@ export default {
 
       return player ? player.username : 'Unknown';
     },
-    
+
     getCreatorUsername() {
       return this.currentGame.creator?.username || 'Unknown';
     },
-    
+
     formatBettingRound(round) {
       const formats = {
         'preflop': 'Pre-Flop',
@@ -218,7 +212,7 @@ export default {
       };
       return formats[round] || round;
     },
-    
+
     startGame() {
       console.log("Start game button clicked");
       if (!this.enoughPlayersReady) {
@@ -228,47 +222,47 @@ export default {
       }
       this.$emit('startGame');
     },
-    
+
     forceStartGame() {
       console.log("Forcing game start from debug panel");
       this.$emit('startGame');
     },
-    
+
     requestInitialization() {
       this.$emit('requestInitialization');
     },
-    
+
     requestStateUpdate() {
       this.$emit('requestStateUpdate');
     },
-    
+
     returnToLobby() {
       this.$router.push('/lobby');
     },
-    
+
     onPlayersReady(isReady) {
       this.enoughPlayersReady = isReady;
       console.log("Players ready status updated:", isReady);
     },
-    
+
     addToLog(message) {
       this.$emit('addToLog', message);
     },
-    
+
     checkReadyPlayers() {
       if (!this.currentGame || !this.currentGame.players) {
         this.enoughPlayersReady = false;
         return;
       }
-      
+
       const readyPlayers = this.currentGame.players.filter(p => p.isReady);
       const enoughReady = readyPlayers.length >= 2;
-      
+
       console.log(`Ready players check: ${readyPlayers.length} ready, enough: ${enoughReady}`);
-      
+
       // Update the internal state
       this.enoughPlayersReady = enoughReady;
-      
+
       // Also emit the event for parent components
       this.$emit('playersReady', enoughReady);
     }
@@ -285,7 +279,9 @@ export default {
   text-align: center;
 }
 
-.waiting-status, .active-status, .completed-status {
+.waiting-status,
+.active-status,
+.completed-status {
   margin-bottom: 20px;
 }
 
@@ -362,7 +358,8 @@ export default {
   margin-top: 20px;
 }
 
-.start-btn, .initialize-btn {
+.start-btn,
+.initialize-btn {
   padding: 12px 24px;
   border: none;
   border-radius: 4px;
@@ -405,12 +402,12 @@ export default {
     transform: scale(1);
     box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
   }
-  
+
   70% {
     transform: scale(1.05);
     box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
   }
-  
+
   100% {
     transform: scale(1);
     box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
@@ -470,7 +467,6 @@ export default {
   font-size: 12px;
 }
 
-.debug-btn:hover {
-  background-color: #e68900;
+.debug-btn:hover {  background-color: #e68900;
 }
 </style>

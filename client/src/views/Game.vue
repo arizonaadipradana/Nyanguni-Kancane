@@ -26,8 +26,8 @@
         <CommunityCards :communityCards="currentGame.communityCards" :formatCard="formatCard" />
 
         <!-- Players -->
-        <PlayerList ref="playerList" :players="currentGame.players" :currentUser="currentUser" :currentTurn="currentGame.currentTurn"
-          :playerHand="playerHand" :formatCard="formatCard" />
+        <PlayerList ref="playerList" :players="currentGame.players" :currentUser="currentUser"
+          :currentTurn="currentGame.currentTurn" :playerHand="playerHand" :formatCard="formatCard" />
 
         <!-- Player actions -->
         <PlayerActions v-if="isYourTurn || shouldShowActions()" :availableActions="availableActions"
@@ -961,6 +961,77 @@ export default {
         this.currentHandTimestamp = 0;
       }
     },
+    /**
+ * Check if there's only one player left and show winner
+ */
+    checkLastPlayerStanding() {
+      if (!this.currentGame || this.currentGame.status !== 'active' || this.showWinnerDisplay) {
+        return false;
+      }
+
+      // Filter for active players who haven't folded
+      const activePlayers = this.currentGame.players.filter(p => p.isActive && !p.hasFolded);
+
+      // If there's only one player remaining, they win
+      if (activePlayers.length === 1) {
+        const winner = activePlayers[0];
+        this.addToLog(`${winner.username} wins by default - last player remaining!`);
+
+        // Prepare winner data
+        this.handWinners = [{
+          playerId: winner.id,
+          username: winner.username,
+          handName: "Last Player Standing",
+          hand: this.currentUser && winner.id === this.currentUser.id ? this.playerHand : []
+        }];
+
+        // Prepare all players data
+        this.allPlayersCards = this.currentGame.players
+          .filter(p => p.isActive) // Only include active players
+          .map(player => {
+            const isWinner = player.id === winner.id;
+            return {
+              playerId: player.id,
+              username: player.username || "Unknown Player",
+              hand: isWinner && this.currentUser && player.id === this.currentUser.id ? this.playerHand : [],
+              isWinner: isWinner,
+              handType: isWinner ? "Winner" : "Folded",
+              handDescription: isWinner ? "Last Player Standing" : "Folded"
+            };
+          });
+
+        // Set pot and community cards
+        this.winningPot = this.currentGame.pot || 1; // Use at least 1 chip
+        this.communityCards = this.currentGame.communityCards || [];
+        this.isFoldWin = true;
+
+        // Show the winner display
+        this.showWinnerDisplay = true;
+
+        return true;
+      }
+
+      return false;
+    },
+
+  },
+
+  watch: {
+    'currentGame.players': {
+      handler(newPlayers, oldPlayers) {
+        // Check if number of active players has changed
+        if (oldPlayers && newPlayers) {
+          const oldActivePlayers = oldPlayers.filter(p => p.isActive && !p.hasFolded);
+          const newActivePlayers = newPlayers.filter(p => p.isActive && !p.hasFolded);
+
+          if (oldActivePlayers.length !== newActivePlayers.length && newActivePlayers.length === 1) {
+            // Check if we need to show the winner
+            this.checkLastPlayerStanding();
+          }
+        }
+      },
+      deep: true
+    }
   },
 
   created() {
@@ -971,6 +1042,11 @@ export default {
     this.clearErrorMessage();
 
     console.log(`Initializing game with ID: ${this.gameId}`);
+
+    // Add this line to check for last player standing on initialization
+    this.$nextTick(() => {
+      if (this.currentGame) this.checkLastPlayerStanding();
+    });
   },
 
   async mounted() {

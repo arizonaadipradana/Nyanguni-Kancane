@@ -2,7 +2,7 @@
 /**
  * Socket event handlers for the Game component
  */
-import PokerHandEvaluator from '@/utils/PokerHandEvaluator';
+import PokerHandEvaluator from "@/utils/PokerHandEvaluator";
 
 export default {
   /**
@@ -12,16 +12,61 @@ export default {
    */
   createHandlers(component) {
     return {
-      // client/src/components/Game/GameHandlers.js - Fixed turn handling
-
       /**
-       * Handle game state update event with real-time UI updates
+       * Handle game update event with real-time UI updates and winner detection
        * @param {Object} gameState - New game state
        */
       handleGameUpdate(gameState) {
         if (!gameState) return;
 
-        // Log detailed game state for debugging
+        // Check for only one active player before updating state
+        const activePlayers = gameState.players
+          ? gameState.players.filter((p) => p.isActive && !p.hasFolded)
+          : [];
+
+        // Handle case where only one player is left active
+        if (
+          gameState.status === "active" &&
+          activePlayers.length === 1 &&
+          component.currentGame &&
+          component.currentGame.players &&
+          component.currentGame.players.length > 1
+        ) {
+          const winner = activePlayers[0];
+          component.addToLog(
+            `${winner.username} wins by default - last player remaining!`
+          );
+
+          // Only show winner display if it's not already showing
+          if (!component.showWinnerDisplay) {
+            // Create winner data
+            component.handWinners = [
+              {
+                playerId: winner.id,
+                username: winner.username,
+                handName: "Last Player Standing",
+                hand:
+                  component.currentUser &&
+                  winner.id === component.currentUser.id
+                    ? component.playerHand
+                    : [],
+              },
+            ];
+
+            // Set pot amount
+            component.winningPot = gameState.pot || 1;
+
+            // Set fold win flag
+            component.isFoldWin = true;
+
+            // Show winner display
+            component.showWinnerDisplay = true;
+          }
+
+          // Now continue with normal update
+        }
+
+        // [Rest of the existing handleGameUpdate function...]
         console.log("Updating game state with data:", {
           id: gameState.id,
           status: gameState.status,
@@ -146,11 +191,55 @@ export default {
       },
 
       /**
-       * Handle player left event
+       * Handle player left event with fold/winner detection
        * @param {Object} data - Player data
        */
       handlePlayerLeft(data) {
         component.addToLog(`${data.username} left the game`);
+
+        // Check if there's only one player left and game is active
+        if (
+          component.currentGame &&
+          component.currentGame.status === "active"
+        ) {
+          const activePlayers = component.currentGame.players.filter(
+            (p) => p.isActive && !p.hasFolded
+          );
+
+          // If only one active player remains, they win by default
+          if (activePlayers.length === 1) {
+            const winner = activePlayers[0];
+            component.addToLog(
+              `${winner.username} wins by default - last player remaining!`
+            );
+
+            // Only show winner display if it's not already showing
+            if (!component.showWinnerDisplay) {
+              // Prepare winner data
+              component.handWinners = [
+                {
+                  playerId: winner.id,
+                  username: winner.username,
+                  handName: "Last Player Standing",
+                  hand:
+                    component.currentUser &&
+                    winner.id === component.currentUser.id
+                      ? component.playerHand
+                      : [],
+                },
+              ];
+
+              // Prepare pot amount - use current game pot or a minimum value
+              component.winningPot = component.currentGame.pot || 1;
+
+              // Set flag for fold win
+              component.isFoldWin = true;
+
+              // Show the winner display
+              component.showWinnerDisplay = true;
+            }
+          }
+        }
       },
 
       /**
@@ -372,26 +461,33 @@ export default {
        */
       handleHandResult(result) {
         console.log("Received hand result:", result);
-  
+
         // Add safety checks and debug info for hand result processing
         if (!result) {
           console.error("Hand result is empty or invalid");
           return;
         }
-  
+
         // Deep inspect the result to see what we're receiving
         console.log("Winners array:", JSON.stringify(result.winners));
-        console.log("All players cards:", JSON.stringify(result.allPlayersCards));
+        console.log(
+          "All players cards:",
+          JSON.stringify(result.allPlayersCards)
+        );
         console.log("Community cards:", JSON.stringify(result.communityCards));
         console.log("Pot amount:", result.pot);
         console.log("Is fold win:", result.isFoldWin);
-  
+
         // Make sure winners array exists and is properly formatted
-        if (!result.winners || !Array.isArray(result.winners) || result.winners.length === 0) {
+        if (
+          !result.winners ||
+          !Array.isArray(result.winners) ||
+          result.winners.length === 0
+        ) {
           console.error("No valid winners in result data");
           return;
         }
-  
+
         // Create a safe copy of the winners with default values for missing properties
         const safeWinners = result.winners.map((winner) => ({
           playerId: winner.playerId || "unknown",
@@ -399,20 +495,20 @@ export default {
           handName: winner.handName || "Unknown Hand",
           hand: Array.isArray(winner.hand) ? winner.hand : [],
         }));
-  
+
         // Process all players' cards and properly evaluate their hands
         const allPlayersCards = Array.isArray(result.allPlayersCards)
           ? result.allPlayersCards.map((player) => {
               // Process player hand and evaluate it properly
               const playerHand = Array.isArray(player.hand) ? player.hand : [];
-              const commCards = Array.isArray(result.communityCards) 
-                ? result.communityCards 
+              const commCards = Array.isArray(result.communityCards)
+                ? result.communityCards
                 : [];
-              
+
               // Only evaluate if we have valid cards
               let handType = "Unknown";
               let handDescription = "Unknown Hand";
-              
+
               if (playerHand.length > 0) {
                 const evaluation = PokerHandEvaluator.evaluateHand(
                   playerHand,
@@ -424,23 +520,25 @@ export default {
                 handType = "Folded";
                 handDescription = "Folded";
               }
-  
+
               return {
                 playerId: player.playerId || "unknown",
                 username: player.username || "Unknown Player",
                 handName: handDescription, // Use the evaluated hand name
                 handType: handType,
                 hand: playerHand,
-                isWinner: player.isWinner || safeWinners.some(w => w.playerId === player.playerId),
+                isWinner:
+                  player.isWinner ||
+                  safeWinners.some((w) => w.playerId === player.playerId),
               };
             })
           : [];
-  
+
         // Store community cards if provided
         const communityCards = Array.isArray(result.communityCards)
           ? result.communityCards
           : [];
-  
+
         // Safely set the data on the component
         component.handWinners = safeWinners;
         component.allPlayersCards = allPlayersCards;
@@ -448,20 +546,20 @@ export default {
         component.winningPot = result?.pot || 0;
         component.isFoldWin = result?.isFoldWin || false;
         component.showWinnerDisplay = true;
-  
+
         // Format winner names for log
         const winnerNames = safeWinners
           .map((winner) => winner.username)
           .join(", ");
-  
+
         // Create appropriate log message
         let logMessage = `Hand complete. Winner(s): ${winnerNames}`;
         if (result.isFoldWin) {
           logMessage = `${winnerNames} wins by fold`;
         }
-  
+
         component.addToLog(logMessage);
-  
+
         // Force UI update
         component.forceCardUpdate();
       },

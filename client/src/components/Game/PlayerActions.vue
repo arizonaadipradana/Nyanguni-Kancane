@@ -7,27 +7,16 @@
 
     <!-- Only show actions if game is active and it's the player's turn -->
     <div v-if="isGameActive && isYourTurn" class="action-buttons">
-      <button 
-        v-if="availableActions.includes('fold')" 
-        @click="$emit('handleAction', 'fold')" 
-        class="btn btn-danger"
-      >
+      <button v-if="availableActions.includes('fold')" @click="$emit('handleAction', 'fold')" class="btn btn-danger">
         Fold
       </button>
 
-      <button 
-        v-if="availableActions.includes('check')" 
-        @click="$emit('handleAction', 'check')" 
-        class="btn"
-      >
+      <button v-if="availableActions.includes('check')" @click="$emit('handleAction', 'check')" class="btn">
         Check
       </button>
 
-      <button 
-        v-if="availableActions.includes('call')" 
-        @click="$emit('handleAction', 'call', getCallAmount())" 
-        class="btn"
-      >
+      <button v-if="availableActions.includes('call')" @click="$emit('handleAction', 'call', getCallAmount())"
+        class="btn">
         Call {{ formattedCallAmount }} chips
       </button>
 
@@ -36,16 +25,8 @@
           <label for="betAmount">Bet Amount:</label>
           <div class="input-with-controls">
             <button type="button" @click="decrementBet" class="amount-btn">-</button>
-            <input 
-              type="number" 
-              id="betAmount"
-              v-model.number="internalBetAmount" 
-              @change="updateLocalBetAmount"
-              @blur="validateBetAmount"
-              :min="1"
-              :max="getMaxBetAmount()" 
-              class="amount-input"
-            />
+            <input type="number" id="betAmount" v-model.number="internalBetAmount" @change="updateLocalBetAmount"
+              @blur="validateBetAmount" :min="1" :max="getMaxBetAmount()" class="amount-input" />
             <button type="button" @click="incrementBet" class="amount-btn">+</button>
           </div>
         </div>
@@ -59,16 +40,8 @@
           <label for="raiseAmount">Raise Amount:</label>
           <div class="input-with-controls">
             <button type="button" @click="decrementRaise" class="amount-btn">-</button>
-            <input 
-              type="number" 
-              id="raiseAmount"
-              v-model.number="internalRaiseAmount" 
-              @change="updateLocalRaiseAmount"
-              @blur="validateRaiseAmount"
-              :min="getMinRaiseAmount()"
-              :max="getMaxRaiseAmount()" 
-              class="amount-input"
-            />
+            <input type="number" id="raiseAmount" v-model.number="internalRaiseAmount" @change="updateLocalRaiseAmount"
+              @blur="validateRaiseAmount" :min="getMinRaiseAmount()" :max="getMaxRaiseAmount()" class="amount-input" />
             <button type="button" @click="incrementRaise" class="amount-btn">+</button>
           </div>
         </div>
@@ -77,7 +50,7 @@
         </button>
       </div>
     </div>
-    
+
     <!-- Message when it's not the player's turn or game is not active -->
     <div v-else-if="!isGameActive" class="waiting-message">
       Waiting for next hand to start...
@@ -91,7 +64,7 @@
 <script>
 export default {
   name: 'PlayerActions',
-  
+
   props: {
     availableActions: {
       type: Array,
@@ -114,31 +87,31 @@ export default {
       default: false
     }
   },
-  
+
   data() {
     return {
       internalBetAmount: 1,
       internalRaiseAmount: 2
     };
   },
-  
+
   computed: {
     formattedCallAmount() {
       const amount = this.getCallAmount();
       return isNaN(amount) ? 0 : amount;
     },
-    
+
     isGameActive() {
       return this.currentGame && this.currentGame.status === 'active';
     }
   },
-  
+
   created() {
     // Initialize internal values from props
     this.internalBetAmount = this.betAmount || 1;
     this.internalRaiseAmount = this.raiseAmount || this.getMinRaiseAmount();
   },
-  
+
   methods: {
     // Helpers
     getCurrentPlayer() {
@@ -148,104 +121,104 @@ export default {
       );
       return player;
     },
-    
+
     getPlayerChipsInPot() {
       const player = this.getCurrentPlayer();
       return player ? (player.chips || 0) : 0;
     },
-    
+
     getCallAmount() {
       const currentBet = this.currentGame ? (this.currentGame.currentBet || 0) : 0;
       const playerChips = this.getPlayerChipsInPot();
       const callAmount = currentBet - playerChips;
       return Math.max(0, callAmount);
     },
-    
+
     getMaxBetAmount() {
       const player = this.getCurrentPlayer();
       return player ? (player.totalChips || 1) : 1;
     },
-    
+
     getMinRaiseAmount() {
       // Calculate minimum raise amount properly
       const currentBet = this.currentGame ? (this.currentGame.currentBet || 0) : 0;
-      
+
       // Min raise is current bet doubled
       return Math.max(currentBet * 2, 2);
     },
-    
+
     getMaxRaiseAmount() {
       const player = this.getCurrentPlayer();
       if (!player) return 2;
-      
+
       const totalChips = player.totalChips || 0;
       const chipsInPot = player.chips || 0;
       return totalChips + chipsInPot;
     },
-    
+
     // UI Events
     handleBet() {
       if (!this.isGameActive || !this.isYourTurn) return;
-      
+
       this.validateBetAmount();
       this.$emit('handleAction', 'bet', this.internalBetAmount);
     },
-    
+
     handleRaise() {
       if (!this.isGameActive || !this.isYourTurn) return;
-      
+
       this.validateRaiseAmount();
       this.$emit('handleAction', 'raise', this.internalRaiseAmount);
     },
-    
+
     updateLocalBetAmount() {
       this.validateBetAmount();
       this.$emit('updateBetAmount', this.internalBetAmount);
     },
-    
+
     updateLocalRaiseAmount() {
       this.validateRaiseAmount();
       this.$emit('updateRaiseAmount', this.internalRaiseAmount);
     },
-    
+
     // Validation
     validateBetAmount() {
       let value = parseInt(this.internalBetAmount);
-      
+
       // Handle NaN and validation
       if (isNaN(value) || value < 1) {
         value = 1;
       }
-      
+
       // Check max
       const maxBet = this.getMaxBetAmount();
       if (value > maxBet) {
         value = maxBet;
       }
-      
+
       // Update the model with valid value
       this.internalBetAmount = value;
     },
-    
+
     validateRaiseAmount() {
       let value = parseInt(this.internalRaiseAmount);
       const minRaise = this.getMinRaiseAmount();
-      
+
       // Handle NaN and validation
       if (isNaN(value) || value < minRaise) {
         value = minRaise;
       }
-      
+
       // Check max
       const maxRaise = this.getMaxRaiseAmount();
       if (value > maxRaise) {
         value = maxRaise;
       }
-      
+
       // Update the model with valid value
       this.internalRaiseAmount = value;
     },
-    
+
     // Increment/Decrement
     incrementBet() {
       // Make sure we have a valid value first
@@ -255,7 +228,7 @@ export default {
       this.internalBetAmount = newValue;
       this.updateLocalBetAmount();
     },
-    
+
     decrementBet() {
       // Make sure we have a valid value first
       this.validateBetAmount();
@@ -264,7 +237,7 @@ export default {
       this.internalBetAmount = newValue;
       this.updateLocalBetAmount();
     },
-    
+
     incrementRaise() {
       // Make sure we have a valid value first
       this.validateRaiseAmount();
@@ -273,7 +246,7 @@ export default {
       this.internalRaiseAmount = newValue;
       this.updateLocalRaiseAmount();
     },
-    
+
     decrementRaise() {
       // Make sure we have a valid value first
       this.validateRaiseAmount();
@@ -283,7 +256,7 @@ export default {
       this.updateLocalRaiseAmount();
     }
   },
-  
+
   watch: {
     // Watch for external changes
     betAmount: {
@@ -294,7 +267,7 @@ export default {
       },
       immediate: true
     },
-    
+
     raiseAmount: {
       handler(newVal) {
         if (newVal !== this.internalRaiseAmount) {
@@ -303,7 +276,7 @@ export default {
       },
       immediate: true
     },
-    
+
     // Watch for changes in game status
     'currentGame.status': {
       handler(newStatus) {
@@ -396,7 +369,8 @@ export default {
   border-radius: 0;
   padding: 8px;
   text-align: center;
-  -moz-appearance: textfield; /* Remove arrows in Firefox */
+  -moz-appearance: textfield;
+  /* Remove arrows in Firefox */
 }
 
 /* Remove arrows in Chrome, Safari, Edge, Opera */

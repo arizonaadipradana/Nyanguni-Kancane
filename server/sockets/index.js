@@ -975,31 +975,31 @@ module.exports = (io) => {
           const activePlayers = game.players.filter(
             (p) => p.isActive && !p.hasFolded
           );
-
+          
           if (activePlayers.length < 2) {
             // End the current hand, award pot to remaining player
             if (activePlayers.length === 1) {
               // Hand ends, remaining player wins
               const winnerPlayer = activePlayers[0];
-
+          
               // Define a local result object instead of using undefined global
               const handResult = {
                 handEnded: true,
                 roundEnded: true,
                 winners: [winnerPlayer.user.toString()],
               };
-
+          
               // Award pot to winner
               await gameLogic.awardPot(game, [winnerPlayer]);
-
+          
               // Only send the community cards that have been dealt so far
               const dealtCommunityCards = game.communityCards || [];
-
+          
               // Create allPlayersCards format with only the winner's cards visible
               const allActivePlayers = game.players.filter(
                 (p) => p.isActive && p.hand && p.hand.length > 0
               );
-
+          
               // Create allPlayersCards format with only the winner's cards visible
               const allPlayersCards = allActivePlayers.map((player) => {
                 const isWinner =
@@ -1017,7 +1017,7 @@ module.exports = (io) => {
                   handName: isWinner ? "Winner by fold" : "Folded",
                 };
               });
-
+          
               // Emit the result with the current state of the community cards
               gameIo.to(gameId).emit("handResult", {
                 winners: [
@@ -1037,6 +1037,16 @@ module.exports = (io) => {
                 message: `${winnerPlayer.username} wins by fold`,
               });
             }
+          
+            // Also send a special gameUpdate event to notify about the change
+            gameIo.to(gameId).emit("gameUpdate", gameLogic.getSanitizedGameState(game));
+            
+            // Add special message about player leaving causing win
+            gameIo.to(gameId).emit("chatMessage", {
+              type: "system",
+              message: `${playerName} left the game, causing a player to win by default`,
+              timestamp: new Date(),
+            });
 
             // Check if game should end
             const remainingPlayers = game.players.filter((p) => p.isActive);
