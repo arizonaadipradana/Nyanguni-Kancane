@@ -679,10 +679,20 @@ export default {
     },
 
     // Handle when winner display countdown completes
-    handleWinnerDisplayComplete() {
-      console.log('Winner display countdown complete');
+    handleWinnerDisplayClose() {
+      console.log('Winner display closed');
       this.showWinnerDisplay = false;
       this.handWinners = [];
+
+      // Request a game state update to ensure UI is up to date
+      this.requestStateUpdate();
+
+      // After short delay, try to fetch user data to update balances
+      setTimeout(() => {
+        this.$store.dispatch('fetchUserData')
+          .then(() => console.log("User data refreshed after hand"))
+          .catch(err => console.error("Failed to refresh user data:", err));
+      }, 500);
     },
     handleHandResult(result) {
       console.log("Received hand result:", result);
@@ -808,9 +818,6 @@ export default {
 
       console.log('Starting next hand...');
       this.addToLog('Starting next hand...');
-
-      // Reset game state
-      this.resetGameState();
 
       // Refresh user data first to ensure we have accurate balances
       this.$store.dispatch('fetchUserData')
