@@ -87,6 +87,10 @@
             Start Next Hand
           </button>
         </div>
+
+        <p v-if="currentGame && currentGame.status === 'active'" class="warning-message">
+          Warning: Game state is inconsistent. Please refresh the page if issues persist.
+        </p>
       </div>
 
       <!-- Close Button -->
@@ -683,6 +687,15 @@ export default {
   padding: 10px;
   background-color: rgba(0, 0, 0, 0.2);
   border-radius: 5px;
+}
+
+.warning-message {
+  color: #ff6b6b;
+  font-weight: bold;
+  background-color: rgba(255, 0, 0, 0.1);
+  padding: 5px 10px;
+  border-radius: 4px;
+  margin-top: 10px;
 }
 
 @keyframes scale-in {

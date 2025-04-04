@@ -565,6 +565,29 @@ module.exports = (io) => {
               isFoldWin: true, // Add flag to indicate this was a fold win
               message: `${winnerPlayer.username} wins by fold`,
             });
+            //Ensure game status is immediately set to 'waiting'
+            // This prevents turn signals from being processed after a fold win
+            game.status = "waiting";
+            await game.save();
+
+            // Emit a special gameStatusChange event to force all clients to update their state
+            gameIo.to(gameId).emit("gameStatusChange", {
+              status: "waiting",
+              message:
+                "Hand completed - game is waiting for next hand to start",
+              timestamp: Date.now(),
+            });
+
+            // Also update game state for all clients with the correct status
+            gameIo
+              .to(gameId)
+              .emit("gameUpdate", gameLogic.getSanitizedGameState(game));
+
+            // Send a signal to clear player hands client-side immediately
+            gameIo.to(gameId).emit("clearPlayerHands", {
+              timestamp: Date.now(),
+              message: "Hand completed - clearing cards for next hand",
+            });
 
             //Send signal to clear player hands client-side
             gameIo.to(gameId).emit("clearPlayerHands", {

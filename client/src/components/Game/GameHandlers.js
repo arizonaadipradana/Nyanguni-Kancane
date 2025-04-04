@@ -310,11 +310,16 @@ export default {
        * @param {Object} data - Turn data with available options
        */
       handleYourTurn(data) {
+        if (component.currentGame && component.currentGame.status === 'waiting') {
+          console.log('Received yourTurn event but game is in waiting status - ignoring');
+          return;
+        }
+      
         // Check if we're already processing a turn or the state doesn't match
         if (component.currentGame && component.currentUser) {
           const currentTurnId = component.currentGame.currentTurn;
           const userId = component.currentUser.id;
-
+      
           // Validate that this turn matches the game state
           if (currentTurnId && userId && currentTurnId !== userId) {
             console.warn(
@@ -324,7 +329,7 @@ export default {
                 gameTurn: currentTurnId,
               }
             );
-
+      
             // Request fresh state to ensure synchronization
             setTimeout(() => {
               component.requestStateUpdate();
@@ -332,41 +337,38 @@ export default {
             return;
           }
         }
-
+      
         // Prevent duplicate processing in quick succession
         if (component.isYourTurnProcessed) {
           console.log("Already processed yourTurn, ignoring duplicate");
           return;
         }
-
+      
         console.log("Your turn event received:", data);
-
+      
         // Update the UI state before adding to log to ensure fast UI response
         component.yourTurn(data);
-
+      
         // Need to set component local state directly too for immediate UI update
         component.isYourTurn = true;
-
+      
         component.addToLog("It is your turn");
-
+      
         // Make sure UI shows game is active
-        if (
-          component.currentGame &&
-          component.currentGame.status !== "active"
-        ) {
+        if (component.currentGame && component.currentGame.status !== "active") {
           component.$set(component.currentGame, "status", "active");
         }
-
+      
         // Mark game as initialized
         component.gameInitialized = true;
         component.gameInProgress = true;
-
+      
         // Start action timer with the timeLimit from data or default to 60 seconds
         component.startActionTimer(data.timeLimit || 60);
-
+      
         // Set flag to avoid duplicate processing
         component.isYourTurnProcessed = true;
-
+      
         // Reset the flag after a delay
         setTimeout(() => {
           component.isYourTurnProcessed = false;
@@ -461,33 +463,26 @@ export default {
        */
       handleHandResult(result) {
         console.log("Received hand result:", result);
-
+      
         // Add safety checks and debug info for hand result processing
         if (!result) {
           console.error("Hand result is empty or invalid");
           return;
         }
-
+      
         // Deep inspect the result to see what we're receiving
         console.log("Winners array:", JSON.stringify(result.winners));
-        console.log(
-          "All players cards:",
-          JSON.stringify(result.allPlayersCards)
-        );
+        console.log("All players cards:", JSON.stringify(result.allPlayersCards));
         console.log("Community cards:", JSON.stringify(result.communityCards));
         console.log("Pot amount:", result.pot);
         console.log("Is fold win:", result.isFoldWin);
-
+      
         // Make sure winners array exists and is properly formatted
-        if (
-          !result.winners ||
-          !Array.isArray(result.winners) ||
-          result.winners.length === 0
-        ) {
+        if (!result.winners || !Array.isArray(result.winners) || result.winners.length === 0) {
           console.error("No valid winners in result data");
           return;
         }
-
+      
         // Create a safe copy of the winners with default values for missing properties
         const safeWinners = result.winners.map((winner) => ({
           playerId: winner.playerId || "unknown",
@@ -495,7 +490,7 @@ export default {
           handName: winner.handName || "Unknown Hand",
           hand: Array.isArray(winner.hand) ? winner.hand : [],
         }));
-
+      
         // Process all players' cards and properly evaluate their hands
         const allPlayersCards = Array.isArray(result.allPlayersCards)
           ? result.allPlayersCards.map((player) => {
@@ -504,11 +499,11 @@ export default {
               const commCards = Array.isArray(result.communityCards)
                 ? result.communityCards
                 : [];
-
+      
               // Only evaluate if we have valid cards
               let handType = "Unknown";
               let handDescription = "Unknown Hand";
-
+      
               if (playerHand.length > 0) {
                 const evaluation = component.evaluateHand
                   ? component.evaluateHand(playerHand, commCards)
@@ -519,7 +514,7 @@ export default {
                 handType = "Folded";
                 handDescription = "Folded";
               }
-
+      
               return {
                 playerId: player.playerId || "unknown",
                 username: player.username || "Unknown Player",
@@ -532,12 +527,12 @@ export default {
               };
             })
           : [];
-
+      
         // Store community cards if provided
         const communityCards = Array.isArray(result.communityCards)
           ? result.communityCards
           : [];
-
+      
         // Safely set the data on the component
         component.handWinners = safeWinners;
         component.allPlayersCards = allPlayersCards;
@@ -545,27 +540,44 @@ export default {
         component.winningPot = result?.pot || 0;
         component.isFoldWin = result?.isFoldWin || false;
         component.showWinnerDisplay = true;
-
+      
         // Format winner names for log
         const winnerNames = safeWinners
           .map((winner) => winner.username)
           .join(", ");
-
+      
         // Create appropriate log message
         let logMessage = `Hand complete. Winner(s): ${winnerNames}`;
         if (result.isFoldWin) {
           logMessage = `${winnerNames} wins by fold`;
         }
-
+      
         component.addToLog(logMessage);
-
+      
         // IMPORTANT: Clear player hand to prevent it from showing during the waiting state
         // Keep a reference for the winner display but clear it for the next hand
         component.previousPlayerHand = [...component.playerHand];
         component.playerHand = [];
-
+      
         // Force UI update
         component.forceCardUpdate();
+      
+        // IMPORTANT FIX: If this is a fold win or last player standing, make sure to end any active turns
+        if (result.isFoldWin || result.winners.length === 1) {
+          component.endTurn();
+          
+          // Ensure isYourTurn flag is reset and action timer is cleared
+          component.isYourTurn = false;
+          component.clearActionTimer();
+          
+          // If the current game state isn't already waiting, update it locally to avoid turn confusion
+          if (component.currentGame && component.currentGame.status !== 'waiting') {
+            component.$set(component.currentGame, 'status', 'waiting');
+          }
+      
+          // This helps prevent the "your turn" message after a fold win
+          component.isYourTurnProcessed = false;
+        }
       },
 
       /**

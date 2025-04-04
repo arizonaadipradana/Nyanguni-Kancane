@@ -266,6 +266,9 @@ export default {
       this.isYourTurn = false;
       this.availableActions = [];
 
+      // Make sure action timer is cleared
+      this.clearActionTimer();
+
       // Update store state
       this.$store.commit('SET_YOUR_TURN', false);
       this.$store.commit('SET_AVAILABLE_ACTIONS', []);
@@ -274,6 +277,8 @@ export default {
 
       // Force component update
       this.$forceUpdate();
+
+      console.log('Turn ended successfully');
     },
 
     /**
@@ -602,6 +607,7 @@ export default {
       if (this.actionTimer) {
         clearInterval(this.actionTimer);
         this.actionTimer = null;
+        console.log('Action timer cleared');
       }
     },
 
@@ -824,6 +830,16 @@ export default {
         this.handWinners = [];
       }, 300);
 
+      // IMPORTANT FIX: Make sure game turn state is reset properly
+      this.endTurn();
+      this.isYourTurn = false;
+      if (this.actionTimer) {
+        this.clearActionTimer();
+      }
+
+      // Also ensure isYourTurnProcessed is reset to prevent turn bugs
+      this.isYourTurnProcessed = false;
+
       // Request a game state update to ensure UI is up to date
       this.requestStateUpdate();
 
@@ -864,12 +880,10 @@ export default {
     },
     handleGameStateChange(gameState) {
       // If game state changes from active to waiting, make sure to end any active turns
-      if (
-        this.currentGame &&
+      if (this.currentGame &&
         this.currentGame.status === 'active' &&
         gameState &&
-        gameState.status === 'waiting'
-      ) {
+        gameState.status === 'waiting') {
         console.log('Game state changed from active to waiting, ending any active turns');
         if (this.isYourTurn) {
           this.endTurn();
@@ -1038,10 +1052,37 @@ export default {
 
       return false;
     },
+    handleGameUpdate(gameState) {
+      if (!gameState) return;
 
+      console.log("Handling game update with status:", gameState.status);
+
+      // If game status is waiting but we think it's our turn, fix this inconsistency
+      if (gameState.status === 'waiting' && this.isYourTurn) {
+        console.log("Game is in waiting state but turn is active - fixing inconsistency");
+
+        // End the turn and reset related state
+        this.endTurn();
+        this.clearActionTimer();
+        this.isYourTurn = false;
+        this.isYourTurnProcessed = false;
+
+        // Force a component update to reflect changes immediately
+        this.$forceUpdate();
+      }
+
+      // Update the game state in store
+      this.updateGameState(gameState);
+    }
   },
 
   watch: {
+    'currentGame.currentTurn': function (newTurnId) {
+      if (newTurnId && this.currentUser && newTurnId !== this.currentUser.id && this.isYourTurn) {
+        console.log('Turn inconsistency detected - game says it\'s not your turn but local state disagrees');
+        this.endTurn();
+      }
+    },
     'currentGame.players': {
       handler(newPlayers, oldPlayers) {
         // Check if number of active players has changed
@@ -1164,8 +1205,25 @@ export default {
 
     // Handle status changes
     const gameStatusChangeHandler = (statusData) => {
-      this.handleGameStatusChange(statusData);
+      console.log('Game status changed:', statusData);
+
+      // If game status is changing to waiting, reset for a new hand
+      if (statusData.status === 'waiting') {
+        console.log('Game status changed to waiting, preparing for new hand');
+
+        // End any active turns
+        if (this.isYourTurn) {
+          this.endTurn();
+        }
+
+        // Reset game state
+        this.resetGameState();
+
+        // Clear current hand timestamp to accept new cards
+        this.currentHandTimestamp = 0;
+      }
     };
+
     SocketService.on('gameStatusChange', gameStatusChangeHandler);
     this.eventHandlers.push({ event: 'gameStatusChange', handler: gameStatusChangeHandler });
 
@@ -1183,6 +1241,19 @@ export default {
     };
     SocketService.on('newHandCards', newHandCardsHandler);
     this.eventHandlers.push({ event: 'newHandCards', handler: newHandCardsHandler });
+
+    this.$watch('currentGame.status', (newStatus, oldStatus) => {
+      console.log(`Game status changed from ${oldStatus} to ${newStatus}`);
+
+      // If status changed from active to waiting, end any active turns
+      if (oldStatus === 'active' && newStatus === 'waiting') {
+        if (this.isYourTurn) {
+          console.log('Game is now waiting - ending current turn');
+          this.endTurn();
+          this.clearActionTimer();
+        }
+      }
+    });
   },
 
   beforeDestroy() {

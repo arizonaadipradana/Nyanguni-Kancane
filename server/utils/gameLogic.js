@@ -79,10 +79,10 @@ const gameLogic = {
     // Store all dealt cards to verify uniqueness
     const dealtCards = [];
 
-     //Clear game.players[].hand before dealing
-  game.players.forEach(player => {
-    player.hand = []; // Ensure we start with an empty hand
-  });
+    //Clear game.players[].hand before dealing
+    game.players.forEach((player) => {
+      player.hand = []; // Ensure we start with an empty hand
+    });
 
     // Deal two cards to each active player
     for (let i = 0; i < 2; i++) {
@@ -90,7 +90,7 @@ const gameLogic = {
         if (player.isActive && player.totalChips > 0) {
           // Draw a card
           let card = cardDeck.drawCard(game.deck);
-  
+
           // Verify this card hasn't been dealt already (just in case)
           while (
             dealtCards.some((c) => c.suit === card.suit && c.rank === card.rank)
@@ -103,11 +103,11 @@ const gameLogic = {
             game.deck.splice(randomIndex, 0, card);
             card = cardDeck.drawCard(game.deck);
           }
-  
+
           // Add card to player's hand and tracking list
           player.hand.push(card);
           dealtCards.push(card);
-  
+
           console.log(
             `Dealt ${card.rank} of ${card.suit} to player ${player.username}`
           );
@@ -156,18 +156,18 @@ const gameLogic = {
       console.error(`Card validation failed in startNewHand: ${err.message}`);
       // In this case, try to fix by recreating the deck and dealing again
       console.log("Attempting to fix by completely redealing cards");
-  
+
       // Reset player hands
       game.players.forEach((player) => {
         player.hand = [];
       });
-  
+
       // Create a new deck
       game.deck = cardDeck.getFreshShuffledDeck();
-  
+
       // Deal cards again with extra checks
       dealtCards.length = 0; // Clear tracking array
-  
+
       for (let i = 0; i < 2; i++) {
         for (const player of game.players) {
           if (player.isActive && player.totalChips > 0) {
@@ -185,7 +185,7 @@ const gameLogic = {
               game.deck = cardDeck.getFreshShuffledDeck();
               card = cardDeck.drawCard(game.deck);
             }
-  
+
             player.hand.push(card);
             dealtCards.push(card);
             console.log(
@@ -194,25 +194,27 @@ const gameLogic = {
           }
         }
       }
-  
+
       // Verify again
       this.validateGameCards(game);
     }
-  
+
     // IMPORTANT: Log the final deal to verify
     console.log("FINAL DEALT HANDS:");
     game.players.forEach((player) => {
       if (player.hand && player.hand.length) {
         console.log(
-          `Player ${player.username}: ${player.hand.map((c) => `${c.rank} of ${c.suit}`).join(", ")}`
+          `Player ${player.username}: ${player.hand
+            .map((c) => `${c.rank} of ${c.suit}`)
+            .join(", ")}`
         );
       }
     });
-  
+
     // Save the updated game with the skipValidation flag to avoid mongoose validation issues
     game._skipValidation = true;
     await game.save();
-  
+
     return game;
   },
 
@@ -404,6 +406,9 @@ const gameLogic = {
 
           // Award pot to winner
           await this.awardPot(game, [activePlayers[0]]);
+
+          //Set game status to 'waiting' after fold win
+          game.status = "waiting";
 
           result.message = `${activePlayers[0].username} wins the pot of ${result.potAmount} chips`;
           return result;
@@ -1143,6 +1148,12 @@ const gameLogic = {
       game.pot = 0;
       game.currentBet = 0;
       game.communityCards = [];
+
+      // Ensure game status is set to 'waiting'
+      game.status = "waiting";
+
+      // Clear current turn to prevent any lingering turn signals
+      game.currentTurn = undefined;
 
       // IMPORTANT FIX: Create a completely new shuffled deck for the next hand
       const cardDeck = require("./cardDeck");
