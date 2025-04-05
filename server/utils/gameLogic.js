@@ -437,11 +437,14 @@ const gameLogic = {
 
         // BUGFIX: Check if the player has enough chips to call
         if (callAmount > player.totalChips) {
+          console.log(
+            `Player ${player.username} doesn't have enough chips to call, converting to all-in`
+          );
           // Player doesn't have enough chips to call, convert this to an all-in
-          await this.placeAllIn(game, playerId);
+          await gameLogic.placeAllIn(game, playerId);
         } else {
           // Player has enough chips to call
-          await this.placeBet(game, playerId, callAmount);
+          await gameLogic.placeBet(game, playerId, callAmount);
         }
 
         player.hasActed = true;
@@ -449,8 +452,9 @@ const gameLogic = {
         // Add to action history
         game.actionHistory.push({
           player: player.username,
-          action: "call",
-          amount: callAmount,
+          action: callAmount > player.totalChips ? "allIn" : "call",
+          amount:
+            callAmount > player.totalChips ? player.totalChips : callAmount,
           timestamp: Date.now(),
         });
         break;
@@ -548,6 +552,17 @@ const gameLogic = {
         break;
 
       case "allIn":
+        // Get the player's actual maximum chips
+        const maxPlayerChips = player.totalChips;
+
+        // Limit the amount to what the player actually has
+        if (amount > maxPlayerChips) {
+          console.log(
+            `Limiting all-in amount from ${amount} to ${maxPlayerChips} for player ${player.username}`
+          );
+          amount = maxPlayerChips;
+        }
+
         await this.placeAllIn(game, playerId);
         player.hasActed = true;
 
@@ -569,7 +584,7 @@ const gameLogic = {
         game.actionHistory.push({
           player: player.username,
           action: "allIn",
-          amount: player.chips,
+          amount: player.chips, // Use the actual amount in the pot
           timestamp: Date.now(),
         });
         break;
@@ -688,7 +703,12 @@ const gameLogic = {
     return true;
   },
 
-  // Place an all-in bet
+  /**
+   * Place an all-in bet with improved side pot tracking
+   * @param {Object} game - Game document
+   * @param {String} playerId - Player ID
+   * @returns {Boolean} Success status
+   */
   async placeAllIn(game, playerId) {
     const player = this.getPlayerById(game, playerId);
 
@@ -706,7 +726,7 @@ const gameLogic = {
 
     // Update player chips
     player.totalChips = 0;
-    player.chips += allInAmount;
+    player.chips += allInAmount; // Add to current chips in pot
     player.isAllIn = true;
 
     // Update pot
@@ -717,34 +737,19 @@ const gameLogic = {
       game.currentBet = player.chips;
     }
 
-    // Initialize side pots if they don't exist
-    if (!game.sidePots) {
-      game.sidePots = [];
-    }
-
-    // Create or update the side pot entry for this all-in
-    const sidePotEntry = {
-      amount: player.chips,
-      eligiblePlayers: game.players
-        .filter((p) => p.isActive && !p.hasFolded)
-        .map((p) => p.user.toString()),
-    };
-
-    game.sidePots.push(sidePotEntry);
-
     // Log after state
     console.log(
       `After all-in: Player ${player.username} has 0 total chips and ${player.chips} in pot`
     );
     console.log(`Game pot is now ${game.pot}`);
-    console.log(`Side pot created: ${JSON.stringify(sidePotEntry)}`);
 
+    // Save the game
     await game.save();
     return true;
   },
 
   /**
-   * Award the pot to winner(s) with improved database updates
+   * Award the pot to winner(s) with improved side pot handling
    * @param {Object} game - Game document
    * @param {Array} winners - Array of winning player objects
    */
@@ -753,13 +758,11 @@ const gameLogic = {
       throw new Error("No winners provided");
     }
 
-    // Make sure there's a valid pot - prevent "won 0 chips" bug
+    // Make sure there's a valid pot
     if (game.pot <= 0) {
       console.warn("Zero or negative pot detected, checking player chips");
-
       // Recalculate the pot based on player chips
       const calculatedPot = game.players.reduce((sum, p) => sum + p.chips, 0);
-
       if (calculatedPot > 0) {
         console.log(
           `Corrected pot value to ${calculatedPot} based on player chips`
@@ -775,90 +778,184 @@ const gameLogic = {
 
     // Store the original pot amount for logging
     const originalPot = game.pot;
+    console.log(`Original pot for award: ${originalPot}`);
 
-    // Handle side pots if they exist
-    if (game.sidePots && game.sidePots.length > 0) {
-      console.log(`Processing ${game.sidePots.length} side pots`);
+    // Get all active players and their contributions
+    const activePlayers = game.players.filter((p) => p.isActive);
+    console.log(
+      `Active players: ${activePlayers
+        .map((p) => `${p.username}:${p.chips}`)
+        .join(", ")}`
+    );
 
-      // Sort side pots by amount (lowest to highest)
-      game.sidePots.sort((a, b) => a.amount - b.amount);
+    // If we have an all-in situation, we need to handle side pots
+    if (activePlayers.some((p) => p.isAllIn)) {
+      console.log("All-in players detected, processing side pots correctly");
 
-      // Track the amounts to be awarded to each player
-      const winnerAwards = {};
-      winners.forEach((winner) => {
-        winnerAwards[winner.user.toString()] = 0;
+      // 1. Get all players who contributed to the pot (including folded players)
+      const contributingPlayers = game.players.filter((p) => p.chips > 0);
+
+      // 2. Sort by the amount contributed (from lowest to highest)
+      contributingPlayers.sort((a, b) => a.chips - b.chips);
+      console.log(
+        `Sorted contributing players: ${contributingPlayers
+          .map((p) => `${p.username}:${p.chips}`)
+          .join(", ")}`
+      );
+
+      // 3. Calculate side pots properly
+      const sidePots = [];
+      let previousAmount = 0;
+
+      for (let i = 0; i < contributingPlayers.length; i++) {
+        const player = contributingPlayers[i];
+        if (player.chips > previousAmount) {
+          // Create a new side pot level
+          const contribution = player.chips - previousAmount;
+
+          // Find all players who contributed at least this much
+          const eligiblePlayerIds = contributingPlayers
+            .filter((p) => p.chips >= player.chips)
+            .map((p) => p.user.toString());
+
+          // Count how many players contributed to this level
+          const contributorCount = contributingPlayers.length - i;
+
+          // Calculate the total at this level = (current player's contribution) * (number of players who contributed at least this much)
+          const totalAtThisLevel = contribution * contributorCount;
+
+          sidePots.push({
+            amount: contribution,
+            total: totalAtThisLevel,
+            eligiblePlayerIds: eligiblePlayerIds,
+          });
+
+          previousAmount = player.chips;
+        }
+      }
+
+      console.log(`Created ${sidePots.length} side pots:`);
+      sidePots.forEach((pot, i) => {
+        console.log(
+          `Side pot ${i + 1}: ${pot.total} chips, ${
+            pot.eligiblePlayerIds.length
+          } eligible players`
+        );
       });
 
-      let previousPotAmount = 0;
+      // 4. Award each side pot to eligible winners
+      let totalAwarded = 0;
 
-      // Process each side pot
-      for (const sidePot of game.sidePots) {
-        // Calculate the pot size for this level
-        const potSize =
-          (sidePot.amount - previousPotAmount) *
-          game.players.filter((p) =>
-            sidePot.eligiblePlayers.includes(p.user.toString())
-          ).length;
-
-        // Find winners eligible for this pot
+      for (const sidePot of sidePots) {
+        // Find winners eligible for this side pot
         const eligibleWinners = winners.filter((winner) =>
-          sidePot.eligiblePlayers.includes(winner.user.toString())
+          sidePot.eligiblePlayerIds.includes(winner.user.toString())
         );
 
         if (eligibleWinners.length > 0) {
-          // Split this pot amount among eligible winners
-          const splitAmount = Math.floor(potSize / eligibleWinners.length);
+          // Split this side pot evenly among eligible winners
+          const amountPerWinner = Math.floor(
+            sidePot.total / eligibleWinners.length
+          );
+          const remainder = sidePot.total % eligibleWinners.length;
 
-          // Award to each eligible winner
-          eligibleWinners.forEach((winner) => {
-            winnerAwards[winner.user.toString()] += splitAmount;
-          });
+          console.log(
+            `Side pot of ${sidePot.total} chips split among ${eligibleWinners.length} eligible winners`
+          );
+
+          // Award chips to each eligible winner
+          for (let i = 0; i < eligibleWinners.length; i++) {
+            const winner = eligibleWinners[i];
+            let amount = amountPerWinner;
+
+            // Add remainder to first winner
+            if (i === 0) {
+              amount += remainder;
+            }
+
+            winner.totalChips += amount;
+            totalAwarded += amount;
+
+            console.log(
+              `Winner ${winner.username} awarded ${amount} chips from side pot, new total: ${winner.totalChips}`
+            );
+
+            // Update user balance in database
+            try {
+              await User.findByIdAndUpdate(winner.user, {
+                balance: winner.totalChips,
+              });
+            } catch (error) {
+              console.error(
+                `Error updating balance for ${winner.username}:`,
+                error
+              );
+            }
+          }
         } else {
-          // If no eligible winners (rare case), redistribute to all players
-          const refundAmount = Math.floor(potSize / game.players.length);
-          game.players.forEach((player) => {
-            player.totalChips += refundAmount;
-          });
-        }
+          // This is a special case where no eligible winners for this side pot
+          // This can happen if all eligible players fold - return chips to players proportionally
+          console.log(
+            `No eligible winners for side pot of ${sidePot.total} chips`
+          );
 
-        previousPotAmount = sidePot.amount;
+          // Find players who contributed to this level
+          const contributors = contributingPlayers.filter((p) =>
+            sidePot.eligiblePlayerIds.includes(p.user.toString())
+          );
+
+          if (contributors.length > 0) {
+            const refundPerPlayer = Math.floor(
+              sidePot.total / contributors.length
+            );
+            const refundRemainder = sidePot.total % contributors.length;
+
+            for (let i = 0; i < contributors.length; i++) {
+              const player = contributors[i];
+              let refund = refundPerPlayer;
+
+              if (i === 0) {
+                refund += refundRemainder;
+              }
+
+              player.totalChips += refund;
+              totalAwarded += refund;
+
+              console.log(
+                `Returning ${refund} chips to ${player.username}, new total: ${player.totalChips}`
+              );
+
+              try {
+                await User.findByIdAndUpdate(player.user, {
+                  balance: player.totalChips,
+                });
+              } catch (error) {
+                console.error(
+                  `Error updating balance for ${player.username}:`,
+                  error
+                );
+              }
+            }
+          }
+        }
       }
 
-      // Apply the calculated awards
-      for (const [userId, amount] of Object.entries(winnerAwards)) {
-        const winner = game.players.find((p) => p.user.toString() === userId);
-        if (winner) {
-          winner.totalChips += amount;
-          console.log(
-            `Winner ${winner.username} awarded ${amount} chips from side pots`
-          );
-        }
+      // Verify all chips are accounted for
+      if (totalAwarded !== originalPot) {
+        console.error(
+          `ACCOUNTING ERROR: Awarded ${totalAwarded} chips but pot was ${originalPot}`
+        );
+      } else {
+        console.log(
+          `Successfully awarded all ${totalAwarded} chips from the pot`
+        );
       }
-
-      // Return remaining chips to players who bet more than the all-in amount
-      game.players.forEach((player) => {
-        if (!player.hasFolded && player.chips > previousPotAmount) {
-          const refundAmount = player.chips - previousPotAmount;
-          player.totalChips += refundAmount;
-          console.log(
-            `Returning ${refundAmount} excess chips to ${player.username}`
-          );
-        }
-      });
     } else {
-      // No side pots, proceed with normal pot distribution
-      // Split the pot evenly among winners
+      // Simple case - no all-ins, just split the pot among winners
+      console.log("No all-in players, distributing pot normally");
       const splitAmount = Math.floor(game.pot / winners.length);
       const remainder = game.pot % winners.length;
 
-      // Keep track of user balances to update in the database
-      const userUpdates = [];
-
-      console.log(
-        `Awarding pot of ${game.pot} chips to ${winners.length} winner(s)`
-      );
-
-      // Award chips to winners
       for (let i = 0; i < winners.length; i++) {
         const winner = winners[i];
         let winAmount = splitAmount;
@@ -868,97 +965,37 @@ const gameLogic = {
           winAmount += remainder;
         }
 
-        // Store original balance for validation
-        const originalBalance = winner.totalChips;
-
-        // Update player's chips in the game
         winner.totalChips += winAmount;
-
-        // Add to list of user balances to update
-        userUpdates.push({
-          userId: winner.user.toString(),
-          newBalance: winner.totalChips,
-          username: winner.username,
-          originalBalance: originalBalance,
-          winAmount: winAmount,
-        });
-
         console.log(
           `Winner ${winner.username} receives ${winAmount} chips, new total: ${winner.totalChips}`
         );
-      }
 
-      // Update all player balances in the database in one go
-      for (const update of userUpdates) {
+        // Update user balance in database
         try {
-          console.log(
-            `Updating database balance for user ${update.username} (${update.userId})`
-          );
-          console.log(
-            `Original balance: ${update.originalBalance}, Win amount: ${update.winAmount}, New total: ${update.newBalance}`
-          );
-
-          // Double-check the math is correct
-          if (update.newBalance !== update.originalBalance + update.winAmount) {
-            console.error(
-              `Balance calculation error: ${update.originalBalance} + ${update.winAmount} != ${update.newBalance}`
-            );
-            console.log(`Fixing balance calculation...`);
-            update.newBalance = update.originalBalance + update.winAmount;
-
-            // Also update the player object in the game
-            const playerToUpdate = winners.find(
-              (w) => w.user.toString() === update.userId
-            );
-            if (playerToUpdate) {
-              playerToUpdate.totalChips = update.newBalance;
-              console.log(
-                `Corrected ${update.username}'s balance to ${update.newBalance}`
-              );
-            }
-          }
-
-          // Update user in database with a forceful approach using $set to ensure it updates
-          const updatedUser = await User.findByIdAndUpdate(
-            update.userId,
-            { $set: { balance: update.newBalance } },
-            { new: true }
-          );
-
-          if (updatedUser) {
-            console.log(
-              `Successfully updated ${update.username}'s balance to ${updatedUser.balance}`
-            );
-          } else {
-            console.error(
-              `User ${update.userId} not found in database when updating balance`
-            );
-          }
-
-          // Update games won for winners
-          await this.updateGamesWon(update.userId);
+          await User.findByIdAndUpdate(winner.user, {
+            balance: winner.totalChips,
+          });
         } catch (error) {
           console.error(
-            `Error updating balance for player ${update.username}:`,
+            `Error updating balance for ${winner.username}:`,
             error
           );
         }
       }
     }
 
-    // Reset pot and side pots
+    // Reset pot and all player chips committed to pot
     game.pot = 0;
     game.sidePots = [];
 
-    // Reset all player chips committed to pot
     game.players.forEach((player) => {
       player.chips = 0;
     });
 
-    // Make sure to save the game document
+    // Save the updated game
     await game.save();
 
-    // Return the updated winners for chaining and the original pot value for reference
+    // Return the updated winners and the original pot
     return {
       winners,
       originalPot,
@@ -1057,7 +1094,7 @@ const gameLogic = {
   },
 
   /**
-   * Process the showdown (compare hands) with enhanced balance updates and pot value fix
+   * Process the showdown with correct side pot handling
    * @param {Object} game - Game document
    * @returns {Object} Showdown results
    */
@@ -1072,33 +1109,12 @@ const gameLogic = {
         (sum, p) => sum + p.chips,
         0
       );
+
       if (game.pot !== totalChipsCommitted) {
         console.log(
           `Correcting pot amount from ${game.pot} to ${totalChipsCommitted} based on player chips`
         );
         game.pot = totalChipsCommitted;
-      }
-
-      // Double-check for zero pot (should never happen)
-      if (game.pot <= 0) {
-        console.error("Zero pot detected in showdown! This should not happen.");
-        console.log(
-          "Players' chips:",
-          game.players.map((p) => ({
-            username: p.username,
-            chips: p.chips,
-            totalChips: p.totalChips,
-          }))
-        );
-
-        // Set a minimum pot based on betting history if possible
-        if (totalChipsCommitted > 0) {
-          game.pot = totalChipsCommitted;
-        } else if (originalPot > 0) {
-          // If we had a pot before, use that value
-          game.pot = originalPot;
-          console.log(`Restoring original pot value: ${originalPot}`);
-        }
       }
 
       // Get players who haven't folded
@@ -1148,36 +1164,11 @@ const gameLogic = {
         this.getPlayerById(game, w.playerId)
       );
 
+      // Use our improved awardPot function that correctly handles side pots
       await this.awardPot(game, winnerPlayers);
 
       // Make sure to save the game after awarding pot
       await game.save();
-
-      // Also update all other players' balances to the database
-      for (const player of game.players) {
-        // Skip winners as they've already been updated
-        if (
-          winnerPlayers.some(
-            (w) => w.user.toString() === player.user.toString()
-          )
-        ) {
-          continue;
-        }
-
-        try {
-          // Update the loser's balance in the database
-          await User.findByIdAndUpdate(
-            player.user,
-            { $set: { balance: player.totalChips } },
-            { new: true }
-          );
-        } catch (error) {
-          console.error(
-            `Error updating balance for player ${player.username}:`,
-            error
-          );
-        }
-      }
 
       // Prepare detailed winner data with proper error handling
       const safeWinners = result.winners.map((w) => {
@@ -1203,16 +1194,6 @@ const gameLogic = {
             ?.handName || "Unknown Hand",
       }));
 
-      // Log what's being returned
-      console.log(
-        `Showdown results - Winners: ${safeWinners.length}, Pot: ${potForResult}`
-      );
-      console.log(
-        `Showdown winners: ${safeWinners
-          .map((w) => `${w.username} with ${w.handName}`)
-          .join(", ")}`
-      );
-
       // Return processed result with all players' cards and the correct pot value
       return {
         winners: safeWinners,
@@ -1224,8 +1205,7 @@ const gameLogic = {
         })),
         allPlayersCards: allPlayersCards,
         communityCards: game.communityCards,
-        // CRITICAL FIX: Use the stored pot value instead of the current game.pot (which is now 0)
-        pot: potForResult,
+        pot: potForResult, // Use the stored pot value instead of the current game.pot
       };
     } catch (error) {
       console.error("Error in processShowdown:", error);

@@ -1,5 +1,20 @@
 {
+  "name": "nyanguni-kancane",
+  "version": "1.0.0",
+  "description": "Nyanguni Kancane Texas Hold'em Poker Game",
+  "scripts": {
+    "client": "cd client && npm run serve",
+    "server": "cd server && npm run dev",
+    "build": "cd client && npm run build",
+    "deploy": "powershell -File ./deploy.ps1",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "copy-build": "powershell -Command \"Remove-Item -Path './server/public/*' -Recurse -Force -ErrorAction SilentlyContinue; Copy-Item -Path './client/dist/*' -Destination './server/public/' -Recurse -Force\"",
+    "build:deploy": "npm run build && npm run copy-build && npm run server"
+  },
   "dependencies": {
     "axios": "^1.8.4"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }

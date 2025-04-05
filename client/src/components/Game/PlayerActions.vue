@@ -124,9 +124,11 @@ export default {
       return player ? player.totalChips : 0;
     },
 
+
     handleAllIn() {
       if (!this.isGameActive || !this.isYourTurn) return;
 
+      // Get the actual maximum chips the player has
       const allInAmount = this.getMaxChips();
       this.$emit('handleAction', 'allIn', allInAmount);
     },
@@ -148,7 +150,12 @@ export default {
       const currentBet = this.currentGame ? (this.currentGame.currentBet || 0) : 0;
       const playerChips = this.getPlayerChipsInPot();
       const callAmount = currentBet - playerChips;
-      return Math.max(0, callAmount);
+
+      // IMPORTANT FIX: Limit call amount to player's available chips
+      const maxPlayerChips = this.getMaxChips();
+
+      // Return the lower of: the required call amount, or the player's total chips
+      return Math.min(Math.max(0, callAmount), maxPlayerChips);
     },
 
     getMaxBetAmount() {
