@@ -527,6 +527,9 @@ class SocketService {
       "gameEnded",
       "gameError",
       "playerConnectionChange",
+      "creatorChanged",
+      "becameCreator",
+      "playerRemoved",
     ];
 
     // Register listeners for each event

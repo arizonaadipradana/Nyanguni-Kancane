@@ -513,7 +513,8 @@ export default {
           'gameUpdate', 'gameStarted', 'playerJoined', 'playerLeft',
           'chatMessage', 'dealCards', 'yourTurn', 'turnChanged',
           'actionTaken', 'dealFlop', 'dealTurn', 'dealRiver',
-          'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo', 'forceCardUpdate', 'clearPlayerHands'
+          'handResult', 'newHand', 'gameEnded', 'gameError', 'creatorInfo', 'forceCardUpdate', 'clearPlayerHands',
+          'creatorChanged', 'becameCreator', 'playerRemoved'
         ];
 
         events.forEach(event => {
@@ -1249,9 +1250,15 @@ export default {
     SocketService.on('observerStatus', this.handleObserverStatus);
     this.eventHandlers.push({ event: 'observerStatus', handler: this.handleObserverStatus });
 
-    //handler for player removed event
-    SocketService.on('playerRemoved', this.handlePlayerRemoved);
-    this.eventHandlers.push({ event: 'playerRemoved', handler: this.handlePlayerRemoved });
+    SocketService.on('creatorChanged', this.handlers.handleCreatorChanged);
+    this.eventHandlers.push({ event: 'creatorChanged', handler: this.handlers.handleCreatorChanged });
+
+    SocketService.on('becameCreator', this.handlers.handleBecameCreator);
+    this.eventHandlers.push({ event: 'becameCreator', handler: this.handlers.handleBecameCreator });
+
+    // Register player removed handler
+    SocketService.on('playerRemoved', this.handlers.handlePlayerRemoved);
+    this.eventHandlers.push({ event: 'playerRemoved', handler: this.handlers.handlePlayerRemoved });
 
     // Handle status changes
     const gameStatusChangeHandler = (statusData) => {

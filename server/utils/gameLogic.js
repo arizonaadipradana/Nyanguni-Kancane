@@ -407,7 +407,7 @@ const gameLogic = {
           // Award pot to winner
           await this.awardPot(game, [activePlayers[0]]);
 
-          //Set game status to 'waiting' after fold win
+          // Set game status to 'waiting' after fold win
           game.status = "waiting";
 
           result.message = `${activePlayers[0].username} wins the pot of ${result.potAmount} chips`;
@@ -434,14 +434,16 @@ const gameLogic = {
       case "call":
         // Match the current bet
         const callAmount = game.currentBet - player.chips;
-        if (callAmount > 0) {
-          if (callAmount >= player.totalChips) {
-            // Player is going all-in with a call
-            await this.placeAllIn(game, playerId);
-          } else {
-            await this.placeBet(game, playerId, callAmount);
-          }
+
+        // BUGFIX: Check if the player has enough chips to call
+        if (callAmount > player.totalChips) {
+          // Player doesn't have enough chips to call, convert this to an all-in
+          await this.placeAllIn(game, playerId);
+        } else {
+          // Player has enough chips to call
+          await this.placeBet(game, playerId, callAmount);
         }
+
         player.hasActed = true;
 
         // Add to action history
@@ -510,7 +512,10 @@ const gameLogic = {
           );
         }
 
-        if (amount >= player.totalChips + player.chips) {
+        // Check if player has enough chips for the raise
+        const totalNeeded = amount - player.chips;
+
+        if (totalNeeded >= player.totalChips) {
           // Player is going all-in with a raise
           await this.placeAllIn(game, playerId);
         } else {
@@ -518,6 +523,7 @@ const gameLogic = {
           const additionalAmount = amount - player.chips;
           await this.placeBet(game, playerId, additionalAmount);
         }
+
         player.hasActed = true;
 
         // Reset other players' acted status since they need to respond to the raise
@@ -683,7 +689,6 @@ const gameLogic = {
   },
 
   // Place an all-in bet
-  // Place an all-in bet
   async placeAllIn(game, playerId) {
     const player = this.getPlayerById(game, playerId);
 
@@ -704,17 +709,35 @@ const gameLogic = {
     player.chips += allInAmount;
     player.isAllIn = true;
 
-    // Update pot and possibly current bet
+    // Update pot
     game.pot += allInAmount;
+
+    // Update current bet only if this all-in raises the current bet
     if (player.chips > game.currentBet) {
       game.currentBet = player.chips;
     }
+
+    // Initialize side pots if they don't exist
+    if (!game.sidePots) {
+      game.sidePots = [];
+    }
+
+    // Create or update the side pot entry for this all-in
+    const sidePotEntry = {
+      amount: player.chips,
+      eligiblePlayers: game.players
+        .filter((p) => p.isActive && !p.hasFolded)
+        .map((p) => p.user.toString()),
+    };
+
+    game.sidePots.push(sidePotEntry);
 
     // Log after state
     console.log(
       `After all-in: Player ${player.username} has 0 total chips and ${player.chips} in pot`
     );
     console.log(`Game pot is now ${game.pot}`);
+    console.log(`Side pot created: ${JSON.stringify(sidePotEntry)}`);
 
     await game.save();
     return true;
@@ -743,13 +766,9 @@ const gameLogic = {
         );
         game.pot = calculatedPot;
       } else {
-        // If calculated pot is still 0 and this is from a fold win or similar situation,
-        // we don't need to force a minimum pot - just log it and continue
         console.log(
           `No chips in pot, this might be normal for the current game state`
         );
-
-        // Set pot to 0 explicitly to avoid undefined values
         game.pot = 0;
       }
     }
@@ -757,128 +776,179 @@ const gameLogic = {
     // Store the original pot amount for logging
     const originalPot = game.pot;
 
-    // If pot is still 0, skip awarding chips but still update other state
-    if (game.pot <= 0) {
-      console.log("Pot is zero or negative, skipping chip distribution");
+    // Handle side pots if they exist
+    if (game.sidePots && game.sidePots.length > 0) {
+      console.log(`Processing ${game.sidePots.length} side pots`);
 
-      // Reset pot to 0 to be safe
-      game.pot = 0;
+      // Sort side pots by amount (lowest to highest)
+      game.sidePots.sort((a, b) => a.amount - b.amount);
 
-      // Reset all player chips committed to pot
-      game.players.forEach((player) => {
-        player.chips = 0;
+      // Track the amounts to be awarded to each player
+      const winnerAwards = {};
+      winners.forEach((winner) => {
+        winnerAwards[winner.user.toString()] = 0;
       });
 
-      // Save the game document
-      await game.save();
+      let previousPotAmount = 0;
 
-      // Return without modifying player balances
-      return {
-        winners,
-        originalPot: 0,
-      };
-    }
+      // Process each side pot
+      for (const sidePot of game.sidePots) {
+        // Calculate the pot size for this level
+        const potSize =
+          (sidePot.amount - previousPotAmount) *
+          game.players.filter((p) =>
+            sidePot.eligiblePlayers.includes(p.user.toString())
+          ).length;
 
-    // Split the pot evenly among winners
-    const splitAmount = Math.floor(game.pot / winners.length);
-    const remainder = game.pot % winners.length;
+        // Find winners eligible for this pot
+        const eligibleWinners = winners.filter((winner) =>
+          sidePot.eligiblePlayers.includes(winner.user.toString())
+        );
 
-    // Keep track of user balances to update in the database
-    const userUpdates = [];
+        if (eligibleWinners.length > 0) {
+          // Split this pot amount among eligible winners
+          const splitAmount = Math.floor(potSize / eligibleWinners.length);
 
-    console.log(
-      `Awarding pot of ${game.pot} chips to ${winners.length} winner(s)`
-    );
+          // Award to each eligible winner
+          eligibleWinners.forEach((winner) => {
+            winnerAwards[winner.user.toString()] += splitAmount;
+          });
+        } else {
+          // If no eligible winners (rare case), redistribute to all players
+          const refundAmount = Math.floor(potSize / game.players.length);
+          game.players.forEach((player) => {
+            player.totalChips += refundAmount;
+          });
+        }
 
-    // Award chips to winners
-    for (let i = 0; i < winners.length; i++) {
-      const winner = winners[i];
-      let winAmount = splitAmount;
-
-      // Add remainder to first winner (if any)
-      if (i === 0) {
-        winAmount += remainder;
+        previousPotAmount = sidePot.amount;
       }
 
-      // Store original balance for validation
-      const originalBalance = winner.totalChips;
+      // Apply the calculated awards
+      for (const [userId, amount] of Object.entries(winnerAwards)) {
+        const winner = game.players.find((p) => p.user.toString() === userId);
+        if (winner) {
+          winner.totalChips += amount;
+          console.log(
+            `Winner ${winner.username} awarded ${amount} chips from side pots`
+          );
+        }
+      }
 
-      // Update player's chips in the game
-      winner.totalChips += winAmount;
-
-      // Add to list of user balances to update
-      userUpdates.push({
-        userId: winner.user.toString(),
-        newBalance: winner.totalChips,
-        username: winner.username,
-        originalBalance: originalBalance,
-        winAmount: winAmount,
+      // Return remaining chips to players who bet more than the all-in amount
+      game.players.forEach((player) => {
+        if (!player.hasFolded && player.chips > previousPotAmount) {
+          const refundAmount = player.chips - previousPotAmount;
+          player.totalChips += refundAmount;
+          console.log(
+            `Returning ${refundAmount} excess chips to ${player.username}`
+          );
+        }
       });
+    } else {
+      // No side pots, proceed with normal pot distribution
+      // Split the pot evenly among winners
+      const splitAmount = Math.floor(game.pot / winners.length);
+      const remainder = game.pot % winners.length;
+
+      // Keep track of user balances to update in the database
+      const userUpdates = [];
 
       console.log(
-        `Winner ${winner.username} receives ${winAmount} chips, new total: ${winner.totalChips}`
+        `Awarding pot of ${game.pot} chips to ${winners.length} winner(s)`
       );
-    }
 
-    // Update all player balances in the database in one go
-    for (const update of userUpdates) {
-      try {
+      // Award chips to winners
+      for (let i = 0; i < winners.length; i++) {
+        const winner = winners[i];
+        let winAmount = splitAmount;
+
+        // Add remainder to first winner (if any)
+        if (i === 0) {
+          winAmount += remainder;
+        }
+
+        // Store original balance for validation
+        const originalBalance = winner.totalChips;
+
+        // Update player's chips in the game
+        winner.totalChips += winAmount;
+
+        // Add to list of user balances to update
+        userUpdates.push({
+          userId: winner.user.toString(),
+          newBalance: winner.totalChips,
+          username: winner.username,
+          originalBalance: originalBalance,
+          winAmount: winAmount,
+        });
+
         console.log(
-          `Updating database balance for user ${update.username} (${update.userId})`
+          `Winner ${winner.username} receives ${winAmount} chips, new total: ${winner.totalChips}`
         );
-        console.log(
-          `Original balance: ${update.originalBalance}, Win amount: ${update.winAmount}, New total: ${update.newBalance}`
-        );
+      }
 
-        // Double-check the math is correct
-        if (update.newBalance !== update.originalBalance + update.winAmount) {
-          console.error(
-            `Balance calculation error: ${update.originalBalance} + ${update.winAmount} != ${update.newBalance}`
+      // Update all player balances in the database in one go
+      for (const update of userUpdates) {
+        try {
+          console.log(
+            `Updating database balance for user ${update.username} (${update.userId})`
           );
-          console.log(`Fixing balance calculation...`);
-          update.newBalance = update.originalBalance + update.winAmount;
+          console.log(
+            `Original balance: ${update.originalBalance}, Win amount: ${update.winAmount}, New total: ${update.newBalance}`
+          );
 
-          // Also update the player object in the game
-          const playerToUpdate = winners.find(
-            (w) => w.user.toString() === update.userId
+          // Double-check the math is correct
+          if (update.newBalance !== update.originalBalance + update.winAmount) {
+            console.error(
+              `Balance calculation error: ${update.originalBalance} + ${update.winAmount} != ${update.newBalance}`
+            );
+            console.log(`Fixing balance calculation...`);
+            update.newBalance = update.originalBalance + update.winAmount;
+
+            // Also update the player object in the game
+            const playerToUpdate = winners.find(
+              (w) => w.user.toString() === update.userId
+            );
+            if (playerToUpdate) {
+              playerToUpdate.totalChips = update.newBalance;
+              console.log(
+                `Corrected ${update.username}'s balance to ${update.newBalance}`
+              );
+            }
+          }
+
+          // Update user in database with a forceful approach using $set to ensure it updates
+          const updatedUser = await User.findByIdAndUpdate(
+            update.userId,
+            { $set: { balance: update.newBalance } },
+            { new: true }
           );
-          if (playerToUpdate) {
-            playerToUpdate.totalChips = update.newBalance;
+
+          if (updatedUser) {
             console.log(
-              `Corrected ${update.username}'s balance to ${update.newBalance}`
+              `Successfully updated ${update.username}'s balance to ${updatedUser.balance}`
+            );
+          } else {
+            console.error(
+              `User ${update.userId} not found in database when updating balance`
             );
           }
-        }
 
-        // Update user in database with a forceful approach using $set to ensure it updates
-        const updatedUser = await User.findByIdAndUpdate(
-          update.userId,
-          { $set: { balance: update.newBalance } },
-          { new: true }
-        );
-
-        if (updatedUser) {
-          console.log(
-            `Successfully updated ${update.username}'s balance to ${updatedUser.balance}`
-          );
-        } else {
+          // Update games won for winners
+          await this.updateGamesWon(update.userId);
+        } catch (error) {
           console.error(
-            `User ${update.userId} not found in database when updating balance`
+            `Error updating balance for player ${update.username}:`,
+            error
           );
         }
-
-        // Update games won for winners
-        await this.updateGamesWon(update.userId);
-      } catch (error) {
-        console.error(
-          `Error updating balance for player ${update.username}:`,
-          error
-        );
       }
     }
 
-    // Reset pot
+    // Reset pot and side pots
     game.pot = 0;
+    game.sidePots = [];
 
     // Reset all player chips committed to pot
     game.players.forEach((player) => {
@@ -1219,6 +1289,9 @@ const gameLogic = {
         player.isReady = false; // Reset ready status for next hand
       });
 
+      // Important: Remove players with zero chips
+      await this.checkAndRemoveBankruptPlayers(game);
+
       // Sync player balances with database (important fix)
       for (const player of game.players) {
         try {
@@ -1281,6 +1354,7 @@ const gameLogic = {
           status: game.status,
           actionHistory: game.actionHistory,
           deck: game.deck, // Include the fresh deck in the update
+          creator: game.creator, // Include updated creator info
         };
 
         // Update the game in the database using findByIdAndUpdate
@@ -1319,6 +1393,7 @@ const gameLogic = {
         freshGame.players = game.players;
         freshGame.status = game.status; // This should be 'waiting' or 'completed'
         freshGame.deck = cardDeck.createDeck(); // Create a fresh deck here too
+        freshGame.creator = game.creator; // Include updated creator info
 
         // Reset ready status in the fresh copy
         freshGame.players.forEach((player) => {
@@ -1395,6 +1470,60 @@ const gameLogic = {
           userId: player.user.toString(),
           username: player.username,
         });
+
+        // If this player was the creator, transfer creator status to the next active player
+        if (
+          game.creator &&
+          game.creator.user.toString() === player.user.toString()
+        ) {
+          // Find next active player to make the new creator
+          const activePlayers = game.players.filter(
+            (p) => p.isActive && p.totalChips > 0
+          );
+
+          if (activePlayers.length > 0) {
+            // Find the player who joined earliest (lowest position value)
+            const nextCreator = activePlayers.reduce((earliest, current) => {
+              return current.position < earliest.position ? current : earliest;
+            }, activePlayers[0]);
+
+            console.log(
+              `Transferring creator status from ${player.username} to ${nextCreator.username}`
+            );
+
+            // Update creator information
+            game.creator = {
+              user: nextCreator.user,
+              username: nextCreator.username,
+            };
+
+            // Emit notification about creator change if socket is provided
+            if (socketIo && gameId) {
+              socketIo.to(gameId).emit("creatorChanged", {
+                previousCreator: {
+                  userId: player.user.toString(),
+                  username: player.username,
+                },
+                newCreator: {
+                  userId: nextCreator.user.toString(),
+                  username: nextCreator.username,
+                },
+                reason: "Previous creator has insufficient chips",
+              });
+
+              // Send a personal message to the new creator
+              const socketId = this.getUserSocketId(
+                nextCreator.user.toString()
+              );
+              if (socketId) {
+                socketIo.to(socketId).emit("becameCreator", {
+                  message:
+                    "You are now the game creator because the previous creator has insufficient chips",
+                });
+              }
+            }
+          }
+        }
 
         playersRemoved = true;
       }

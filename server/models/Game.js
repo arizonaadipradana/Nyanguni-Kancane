@@ -139,6 +139,19 @@ const HandResultSchema = new Schema({
   },
 });
 
+const SidePotSchema = new Schema({
+  amount: {
+    type: Number,
+    required: true,
+  },
+  eligiblePlayers: [
+    {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
+});
+
 // Main Game schema
 const GameSchema = new Schema({
   gameId: {
@@ -215,6 +228,7 @@ const GameSchema = new Schema({
   },
   actionHistory: [ActionSchema],
   handResults: [HandResultSchema],
+  sidePots: [SidePotSchema],
 });
 
 // Update the updatedAt field on save

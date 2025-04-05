@@ -704,6 +704,106 @@ export default {
           component.$refs.playerList.forceUpdate();
         }
       },
+      /**
+       * Handle creator change event
+       * @param {Object} data - Creator change data
+       */
+      handleCreatorChanged(data) {
+        console.log("Creator changed:", data);
+
+        // Update the creator information in the current game
+        if (component.currentGame) {
+          // Check if we have a creator property
+          if (!component.currentGame.creator) {
+            component.currentGame.creator = {};
+          }
+
+          // Update creator info with the new creator
+          component.currentGame.creator = {
+            user: data.newCreator.userId,
+            username: data.newCreator.username,
+          };
+
+          // Force reactivity
+          component.$forceUpdate();
+
+          // Check if the current user is the new creator
+          const isNewCreator =
+            component.currentUser &&
+            component.currentUser.id === data.newCreator.userId;
+
+          if (isNewCreator) {
+            component.explicitIsCreator = true;
+          }
+
+          // Add to game log
+          component.addToLog(
+            `${data.previousCreator.username} is no longer the creator. ${data.newCreator.username} is now the creator. Reason: ${data.reason}`
+          );
+
+          // Request a game state update to ensure UI is up to date
+          component.requestStateUpdate();
+        }
+      },
+
+      /**
+       * Handle becoming the creator
+       * @param {Object} data - Notification data
+       */
+      handleBecameCreator(data) {
+        console.log("Became creator:", data);
+
+        // Update the component state
+        component.explicitIsCreator = true;
+
+        // Show notification to user
+        component.addToLog(`You are now the game creator! ${data.message}`);
+
+        // Show a more prominent alert
+        alert(`You are now the game creator! ${data.message}`);
+
+        // Request a game state update
+        component.requestStateUpdate();
+      },
+
+      /**
+       * Handle player removed event
+       * @param {Object} data - Player removal data
+       */
+      handlePlayerRemoved(data) {
+        console.log("Player removed:", data);
+
+        // Add to game log
+        component.addToLog(
+          `${data.username} has been removed from the game. Reason: ${data.reason}`
+        );
+
+        // If it's the current user
+        if (component.currentUser && data.userId === component.currentUser.id) {
+          // Show a notification
+          alert(`You've been removed from the game: ${data.reason}`);
+
+          // If the reason includes "insufficient chips", update UI
+          if (data.reason.includes("insufficient chips")) {
+            component.SET_ERROR_MESSAGE(
+              "You've been removed from the game due to insufficient chips"
+            );
+
+            // Set observer mode
+            component.isObserver = true;
+            component.observerMessage =
+              "You don't have enough chips to continue playing. You are now in observer mode.";
+
+            // If it was the user's turn, end it
+            if (component.isYourTurn) {
+              component.endTurn();
+            }
+          }
+        }
+
+        // Request updated game state
+        component.requestStateUpdate();
+      },
     };
   },
 };

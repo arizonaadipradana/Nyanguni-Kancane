@@ -1071,6 +1071,36 @@ module.exports = (io) => {
         const playerName = game.players[playerIndex].username;
         const playerData = game.players[playerIndex];
 
+        // Check if this player is the creator
+        const isCreator =
+          game.creator && game.creator.user.toString() === userId;
+        let newCreator = null;
+
+        // Handle creator transfer if the leaving player is the creator
+        if (isCreator && game.players.length > 1) {
+          // Find active players excluding the one leaving
+          const activePlayers = game.players.filter(
+            (p) => p.isActive && p.user.toString() !== userId
+          );
+
+          if (activePlayers.length > 0) {
+            // Choose the player who joined earliest (has the lowest position number)
+            newCreator = activePlayers.reduce((earliest, current) => {
+              return current.position < earliest.position ? current : earliest;
+            }, activePlayers[0]);
+
+            // Update game creator
+            game.creator = {
+              user: newCreator.user,
+              username: newCreator.username,
+            };
+
+            console.log(
+              `Creator status transferred from ${playerName} to ${newCreator.username}`
+            );
+          }
+        }
+
         // Handle differently based on game status
         if (game.status === "waiting") {
           // Remove player from the game completely
@@ -1240,6 +1270,32 @@ module.exports = (io) => {
         // Remove from game rooms tracking
         if (gameRooms.has(gameId)) {
           gameRooms.get(gameId).delete(socket.id);
+        }
+
+        // If creator was transferred, notify all clients
+        if (newCreator) {
+          gameIo.to(gameId).emit("creatorChanged", {
+            previousCreator: {
+              userId: userId,
+              username: playerName,
+            },
+            newCreator: {
+              userId: newCreator.user.toString(),
+              username: newCreator.username,
+            },
+            reason: "Previous creator left the game",
+          });
+
+          // Also send a personal notification to the new creator
+          const newCreatorSocketId = userSockets.get(
+            newCreator.user.toString()
+          );
+          if (newCreatorSocketId) {
+            gameIo.to(newCreatorSocketId).emit("becameCreator", {
+              message:
+                "You are now the game creator because the previous creator left",
+            });
+          }
         }
 
         // Notify all clients that player left
@@ -1847,6 +1903,122 @@ module.exports = (io) => {
         console.error(`Error starting next hand for game ${gameId}:`, error);
         socket.emit("gameError", {
           message: "Server error",
+          details: error.message,
+        });
+      }
+    });
+
+    // handler for player removal event
+    socket.on("playerRemoved", async ({ gameId, userId, reason }) => {
+      try {
+        if (!gameId || !userId) {
+          return socket.emit("gameError", {
+            message: "Missing required fields",
+          });
+        }
+
+        // Find the game
+        const game = await Game.findOne({ gameId });
+        if (!game) {
+          return socket.emit("gameError", { message: "Game not found" });
+        }
+
+        // Find the player
+        const playerIndex = game.players.findIndex(
+          (p) => p.user.toString() === userId
+        );
+        if (playerIndex === -1) {
+          return socket.emit("gameError", { message: "Player not in game" });
+        }
+
+        const player = game.players[playerIndex];
+
+        // Check if this player is the creator
+        const isCreator =
+          game.creator && game.creator.user.toString() === userId;
+        let newCreator = null;
+
+        // Handle creator transfer if needed
+        if (isCreator && game.players.length > 1) {
+          // Find active players excluding the removed one
+          const activePlayers = game.players.filter(
+            (p) =>
+              p.isActive && p.user.toString() !== userId && p.totalChips > 0
+          );
+
+          if (activePlayers.length > 0) {
+            // Choose the player who joined earliest (lowest position)
+            newCreator = activePlayers.reduce((earliest, current) => {
+              return current.position < earliest.position ? current : earliest;
+            }, activePlayers[0]);
+
+            // Update game creator
+            game.creator = {
+              user: newCreator.user,
+              username: newCreator.username,
+            };
+
+            console.log(
+              `Creator status transferred from ${player.username} to ${newCreator.username} due to removal`
+            );
+          }
+        }
+
+        // Mark player as inactive
+        player.isActive = false;
+
+        // Add to game history
+        game.actionHistory.push({
+          player: player.username,
+          action: "playerRemoved",
+          message: reason || "Player removed from game",
+          timestamp: Date.now(),
+        });
+
+        // Save changes
+        await game.save();
+
+        // Notify all clients about player removal
+        gameIo.to(gameId).emit("playerRemoved", {
+          userId,
+          username: player.username,
+          reason: reason || "Player removed from game",
+        });
+
+        // If creator was transferred, notify all clients
+        if (newCreator) {
+          gameIo.to(gameId).emit("creatorChanged", {
+            previousCreator: {
+              userId: userId,
+              username: player.username,
+            },
+            newCreator: {
+              userId: newCreator.user.toString(),
+              username: newCreator.username,
+            },
+            reason: "Previous creator was removed from the game",
+          });
+
+          // Send personal notification to new creator
+          const newCreatorSocketId = userSockets.get(
+            newCreator.user.toString()
+          );
+          if (newCreatorSocketId) {
+            gameIo.to(newCreatorSocketId).emit("becameCreator", {
+              message:
+                "You are now the game creator because the previous creator was removed",
+            });
+          }
+        }
+
+        // Update game state for all clients
+        gameIo
+          .to(gameId)
+          .emit("gameUpdate", gameLogic.getSanitizedGameState(game));
+      } catch (error) {
+        console.error("Player removal error:", error);
+        socket.emit("gameError", {
+          message: "Error removing player",
           details: error.message,
         });
       }
