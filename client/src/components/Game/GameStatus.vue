@@ -1,6 +1,12 @@
 <!-- client/src/components/Game/GameStatus.vue -->
 <template>
   <div class="game-status">
+    <div v-if="isObserver" class="observer-message">
+      <p>{{ observerMessage || 'You are currently observing this game.' }}</p>
+      <button v-if="currentGame && currentGame.status === 'waiting'" @click="joinGame" class="join-btn">
+        Join Game
+      </button>
+    </div>
     <div v-if="currentGame.status === 'waiting'" class="waiting-status">
       <p>Waiting for players to join...</p>
       <p>Game ID: <strong>{{ gameId }}</strong></p>
@@ -70,6 +76,39 @@
         <button @click="requestInitialization" class="initialize-btn">
           Initialize Game
         </button>
+      </div>
+    </div>
+
+    <div v-else-if="currentGame.status === 'completed'" class="completed-status">
+      <p>{{ getCompletionMessage() }}</p>
+
+      <!-- Only show "Return to Lobby" for players with zero balance -->
+      <div v-if="hasZeroBalance()">
+        <p class="error-message">You don't have enough chips to continue!</p>
+        <button @click="returnToLobby" class="btn">
+          Return to Lobby
+        </button>
+      </div>
+
+      <!-- Show "Continue watching" option for observers -->
+      <div v-else-if="isObserver">
+        <p>You can continue watching or return to the lobby.</p>
+        <button @click="returnToLobby" class="btn">
+          Return to Lobby
+        </button>
+      </div>
+
+      <!-- Show waiting message for players who can still play -->
+      <div v-else>
+        <p>Waiting for the game to start again...</p>
+        <p class="status-message">Players without chips have been removed.</p>
+
+        <!-- Ready button -->
+        <div class="ready-status-container">
+          <button @click="toggleReady" class="ready-btn" :class="{ 'ready-confirm': isCurrentPlayerReady }">
+            {{ isCurrentPlayerReady ? 'I\'m Ready ✓' : 'Mark as Ready' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -187,6 +226,69 @@ export default {
   },
 
   methods: {
+    /**
+     * Get appropriate completion message based on game state
+     */
+    getCompletionMessage() {
+      // If message is about "Chip e entek", return that message
+      const endMessage = this.findCompletionMessage();
+      if (endMessage && endMessage.includes("Chip e entek")) {
+        return "Game ended: Chip e entek";
+      }
+
+      // Default message
+      return "Game completed";
+    },
+
+    /**
+     * Find the completion message in action history if available
+     */
+    findCompletionMessage() {
+      if (!this.currentGame || !this.currentGame.actionHistory) {
+        return null;
+      }
+
+      // Look for the gameCompleted action in the history
+      const completionAction = this.currentGame.actionHistory
+        .filter(action => action.action === 'gameCompleted')
+        .pop();
+
+      return completionAction ? completionAction.message : null;
+    },
+
+    /**
+     * Check if current player has zero balance
+     */
+    hasZeroBalance() {
+      if (!this.currentUser || !this.currentGame || !this.currentGame.players) {
+        return false;
+      }
+
+      const currentPlayer = this.currentGame.players.find(
+        p => p.id === this.currentUser.id
+      );
+
+      return currentPlayer && (currentPlayer.totalChips <= 0);
+    },
+
+    /**
+     * Toggle player ready status
+     */
+    toggleReady() {
+      if (!this.currentUser || !this.gameId) {
+        console.error('Cannot toggle ready: missing user or game data');
+        return;
+      }
+
+      SocketService.setPlayerReady(
+        this.gameId,
+        this.currentUser.id,
+        !this.isCurrentPlayerReady
+      );
+
+      this.$emit('addToLog', `You marked yourself as ${!this.isCurrentPlayerReady ? 'ready' : 'not ready'}`);
+    },
+
     getCurrentPlayerName() {
       if (!this.currentGame || !this.currentGame.currentTurn) return 'N/A';
 
@@ -467,6 +569,67 @@ export default {
   font-size: 12px;
 }
 
-.debug-btn:hover {  background-color: #e68900;
+.debug-btn:hover {
+  background-color: #e68900;
+}
+
+.observer-message {
+  background-color: #ffcc00;
+  color: #333;
+  padding: 10px;
+  margin-bottom: 15px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.join-btn {
+  background-color: #3f8c6e;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 15px;
+  margin-top: 5px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.join-btn:hover {
+  background-color: #2c664e;
+}
+
+.error-message {
+  color: #e74c3c;
+  font-weight: bold;
+  margin: 10px 0;
+}
+
+.status-message {
+  color: #f39c12;
+  font-style: italic;
+  margin: 10px 0;
+}
+
+.ready-btn {
+  background-color: #555;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 10px 20px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+  margin-top: 15px;
+}
+
+.ready-btn.ready-confirm {
+  background-color: #4caf50;
+}
+
+.ready-btn:hover {
+  background-color: #666;
+}
+
+.ready-btn.ready-confirm:hover {
+  background-color: #3d8b40;
 }
 </style>

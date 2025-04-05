@@ -20,6 +20,11 @@
         Call {{ formattedCallAmount }} chips
       </button>
 
+      <!-- Add All-In button -->
+      <button v-if="availableActions.includes('allIn')" @click="handleAllIn" class="btn btn-warning">
+        All-In ({{ getMaxChips() }} chips)
+      </button>
+
       <div v-if="availableActions.includes('bet') && !availableActions.includes('raise')" class="bet-action">
         <div class="bet-input-group">
           <label for="betAmount">Bet Amount:</label>
@@ -113,6 +118,18 @@ export default {
   },
 
   methods: {
+    // Add new methods for All-In
+    getMaxChips() {
+      const player = this.getCurrentPlayer();
+      return player ? player.totalChips : 0;
+    },
+
+    handleAllIn() {
+      if (!this.isGameActive || !this.isYourTurn) return;
+
+      const allInAmount = this.getMaxChips();
+      this.$emit('handleAction', 'allIn', allInAmount);
+    },
     // Helpers
     getCurrentPlayer() {
       // This returns the player directly
@@ -287,7 +304,7 @@ export default {
       },
       immediate: true
     },
-    
+
     // Important: Watch minimum raise amount changes to update the field
     'currentGame.currentBet': {
       handler() {
@@ -436,9 +453,17 @@ export default {
     flex-direction: column;
     align-items: center;
   }
-  
+
   .bet-action {
     width: 100%;
   }
+}
+
+.btn-warning {
+  background-color: #f39c12;
+}
+
+.btn-warning:hover {
+  background-color: #e67e22;
 }
 </style>

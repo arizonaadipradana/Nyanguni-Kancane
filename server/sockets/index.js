@@ -3,7 +3,7 @@ const gameLogic = require("../utils/gameLogic");
 const Game = require("../models/Game");
 const User = require("../models/User");
 const mongoose = require("mongoose");
-const { registerChatHandlers } = require('./chatHandlers');
+const { registerChatHandlers } = require("./chatHandlers");
 
 // Map user IDs to socket IDs
 const userSockets = new Map();
@@ -12,7 +12,7 @@ const gameRooms = new Map();
 module.exports = (io) => {
   // Game namespace
   const gameIo = io.of("/game");
-  
+
   registerChatHandlers(io);
 
   /**
@@ -79,13 +79,45 @@ module.exports = (io) => {
           (player) => player.user.toString() === userId
         );
         let playerAdded = false;
+        let observerStatus = false;
 
-        if (!existingPlayer) {
-          // Add player to the game
+        //Check if game is active - if so, user can only observe until it's in waiting state
+        if (!existingPlayer && game.status === "active") {
+          // Set observer status
+          observerStatus = true;
+
+          // Send a notification to the client that they are in observer mode
+          socket.emit("observerStatus", {
+            isObserver: true,
+            message:
+              "Game is in progress. You are in observer mode and can join when the current hand completes.",
+          });
+
+          // Add to chat for this user only
+          socket.emit("chatMessage", {
+            type: "system",
+            message:
+              "Game is in progress. You can join when the current hand completes.",
+            timestamp: new Date(),
+          });
+
+          console.log(`User ${username} is observing game ${gameId}`);
+        } else if (!existingPlayer) {
+          // Add player to the game if it's in waiting state and there's room
           if (game.players.length < 8 && game.status === "waiting") {
+            // Find user to check chip balance
             const user = await User.findById(userId);
             if (!user) {
               socket.emit("gameError", { message: "User not found" });
+              return;
+            }
+
+            // Verify chip balance
+            if (user.balance < 1) {
+              socket.emit("gameError", {
+                message:
+                  "Insufficient chips to join game. Minimum 1 chip required.",
+              });
               return;
             }
 
@@ -116,13 +148,18 @@ module.exports = (io) => {
 
             console.log(`New player ${username} added to game ${gameId}`);
           } else {
-            socket.emit("gameError", { message: "Cannot join the game" });
+            if (game.players.length >= 8) {
+              socket.emit("gameError", { message: "Game is full" });
+            } else {
+              socket.emit("gameError", {
+                message: "Cannot join the game while it's active",
+              });
+            }
             return;
           }
         }
 
         // Always send updated game state to all players in the room
-        // This is critical to keep everyone in sync
         const sanitizedGame = gameLogic.getSanitizedGameState(game);
 
         if (!sanitizedGame.creator && game.creator) {
@@ -136,6 +173,7 @@ module.exports = (io) => {
           creator: game.creator,
           currentUserId: userId,
           isCreator: game.creator && game.creator.user.toString() === userId,
+          isObserver: observerStatus,
         });
 
         // Send a chat message about the new player joining
@@ -261,17 +299,20 @@ module.exports = (io) => {
         }
 
         // Check if enough players
-        if (game.players.length < 2) {
+        const activePlayers = game.players.filter(
+          (p) => p.isActive && p.totalChips > 0
+        );
+        if (activePlayers.length < 2) {
           console.log(
-            `Not enough players in game ${gameId}: ${game.players.length}`
+            `Not enough active players with chips in game ${gameId}: ${activePlayers.length}`
           );
           return socket.emit("gameError", {
-            message: "Need at least 2 players to start",
+            message: "Need at least 2 active players with chips to start",
           });
         }
 
         // Add new check for player readiness
-        const readyPlayers = game.players.filter((p) => p.isReady);
+        const readyPlayers = activePlayers.filter((p) => p.isReady);
         if (readyPlayers.length < 2) {
           console.log(
             `Not enough ready players in game ${gameId}: ${readyPlayers.length}`
@@ -281,8 +322,11 @@ module.exports = (io) => {
           });
         }
 
-        // Check if game already started
-        if (game.status !== "waiting") {
+        // Check if game is in 'waiting' state or 'completed' state (which might be due to player removals)
+        const isGameContinuation =
+          game.status === "completed" && activePlayers.length >= 2;
+
+        if (game.status !== "waiting" && !isGameContinuation) {
           console.log(
             `Game ${gameId} already started (status: ${game.status})`
           );
@@ -292,7 +336,7 @@ module.exports = (io) => {
         }
 
         console.log(
-          `Starting game ${gameId} with ${game.players.length} players (${readyPlayers.length} ready)`
+          `Starting game ${gameId} with ${activePlayers.length} active players (${readyPlayers.length} ready)`
         );
 
         // IMPORTANT FIX: Create a completely fresh deck with enhanced shuffling
@@ -303,10 +347,43 @@ module.exports = (io) => {
         const deckStats = cardDeck.getDeckStats(game.deck);
         console.log(`New game deck statistics:`, deckStats);
 
+        // If this is a continuation of a game after some players were removed
+        if (isGameContinuation) {
+          console.log(`Continuing game ${gameId} after player removals`);
+
+          // Send a message to all players about the continuation
+          gameIo.to(gameId).emit("chatMessage", {
+            type: "system",
+            message:
+              "Game is continuing with remaining players who have chips.",
+            timestamp: new Date(),
+          });
+        }
+
         // Update game status
         game.status = "active";
         game.bettingRound = "preflop";
-        game.dealerPosition = 0; // First player is dealer for first hand
+
+        // Set dealer position based on whether it's a continuation
+        if (!isGameContinuation) {
+          game.dealerPosition = 0; // First player is dealer for first hand
+        } else {
+          // For continuation, rotate the dealer position among active players
+          let nextDealerPos = (game.dealerPosition + 1) % game.players.length;
+
+          // Find the next active player with chips
+          let attempts = 0;
+          while (attempts < game.players.length) {
+            const player = game.players[nextDealerPos];
+            if (player.isActive && player.totalChips > 0) {
+              break; // Found an active player with chips
+            }
+            nextDealerPos = (nextDealerPos + 1) % game.players.length;
+            attempts++;
+          }
+
+          game.dealerPosition = nextDealerPos;
+        }
 
         // Reset ready status for next hand
         game.players.forEach((player) => {
@@ -1630,7 +1707,7 @@ module.exports = (io) => {
 
         await game.save();
 
-        // CRITICAL: Create a fresh deck with completely new cards
+        // IMPORTANT: Create a fresh deck with completely new cards
         game.deck = require("../utils/cardDeck").getFreshShuffledDeck();
         console.log(
           `Created fresh deck with ${game.deck.length} cards for new hand`
@@ -1639,6 +1716,29 @@ module.exports = (io) => {
         // Start a new hand with the fresh deck
         const updatedGame = await gameLogic.startNewHand(game);
         console.log(`New hand started for game ${gameId}`);
+
+        // NEW: Check for and handle bankrupt players
+        const removedPlayers = await gameLogic.checkAndRemoveBankruptPlayers(
+          updatedGame
+        );
+
+        // Emit events for removed players
+        if (removedPlayers && removedPlayers.length > 0) {
+          for (const player of removedPlayers) {
+            gameIo.to(gameId).emit("playerRemoved", {
+              userId: player.userId,
+              username: player.username,
+              reason: "Insufficient chips",
+            });
+
+            // Also emit chat message
+            gameIo.to(gameId).emit("chatMessage", {
+              type: "system",
+              message: `${player.username} has been removed from the game due to insufficient chips`,
+              timestamp: new Date(),
+            });
+          }
+        }
 
         // Notify everyone about the updated player balances
         gameIo.to(gameId).emit("chatMessage", {

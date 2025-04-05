@@ -574,24 +574,56 @@ const gameLogic = {
 
     // Move to next player if hand is still active
     if (!result.handEnded) {
-      try {
-        game.currentTurn = this.getNextPlayerToAct(
-          game,
-          game.players.findIndex((p) => p.user.toString() === playerId)
-        );
-      } catch (error) {
-        // If no more players need to act, betting round is complete
-        result.roundEnded = true;
+      // Check if all remaining active players are all-in
+      const activePlayers = game.players.filter(
+        (p) => p.isActive && !p.hasFolded
+      );
+      const allInPlayers = activePlayers.filter((p) => p.isAllIn);
 
-        // Determine the next phase based on current betting round
-        if (game.bettingRound === "preflop") {
-          result.nextPhase = "flop";
-        } else if (game.bettingRound === "flop") {
-          result.nextPhase = "turn";
-        } else if (game.bettingRound === "turn") {
-          result.nextPhase = "river";
-        } else if (game.bettingRound === "river") {
-          result.nextPhase = "showdown";
+      // If all active players are all-in, deal remaining cards and go to showdown
+      if (
+        activePlayers.length > 1 &&
+        allInPlayers.length === activePlayers.length
+      ) {
+        console.log(
+          "All remaining players are all-in, proceeding directly to showdown"
+        );
+        result.handEnded = false;
+        result.roundEnded = true;
+        result.nextPhase = "showdown";
+
+        // Deal any missing community cards
+        if (game.communityCards.length === 0) {
+          await this.dealFlop(game);
+          await this.dealTurn(game);
+          await this.dealRiver(game);
+        } else if (game.communityCards.length === 3) {
+          await this.dealTurn(game);
+          await this.dealRiver(game);
+        } else if (game.communityCards.length === 4) {
+          await this.dealRiver(game);
+        }
+      } else {
+        // Not all players are all-in, proceed with normal turn sequence
+        try {
+          game.currentTurn = this.getNextPlayerToAct(
+            game,
+            game.players.findIndex((p) => p.user.toString() === playerId)
+          );
+        } catch (error) {
+          // If no more players need to act, betting round is complete
+          result.roundEnded = true;
+
+          // Determine the next phase based on current betting round
+          if (game.bettingRound === "preflop") {
+            result.nextPhase = "flop";
+          } else if (game.bettingRound === "flop") {
+            result.nextPhase = "turn";
+          } else if (game.bettingRound === "turn") {
+            result.nextPhase = "river";
+          } else if (game.bettingRound === "river") {
+            result.nextPhase = "showdown";
+          }
         }
       }
     }
@@ -698,36 +730,54 @@ const gameLogic = {
       throw new Error("No winners provided");
     }
 
-    // Make sure pot is available - prevent "won 0 chips" bug
+    // Make sure there's a valid pot - prevent "won 0 chips" bug
     if (game.pot <= 0) {
-      console.error("Error: Attempting to award a pot of 0 chips");
-      // If debugging, log the current game state
-      console.log("Game state when awarding pot:", {
-        gameId: game.gameId,
-        pot: game.pot,
-        playerChips: game.players.map((p) => ({
-          username: p.username,
-          chips: p.chips,
-          totalChips: p.totalChips,
-        })),
-      });
+      console.warn("Zero or negative pot detected, checking player chips");
 
       // Recalculate the pot based on player chips
       const calculatedPot = game.players.reduce((sum, p) => sum + p.chips, 0);
+
       if (calculatedPot > 0) {
         console.log(
           `Corrected pot value to ${calculatedPot} based on player chips`
         );
         game.pot = calculatedPot;
       } else {
-        // If calculated pot is still 0, set a minimum value based on minimum bet
-        console.log(`Setting minimum pot value of ${game.minBet || 1}`);
-        game.pot = game.minBet || 1;
+        // If calculated pot is still 0 and this is from a fold win or similar situation,
+        // we don't need to force a minimum pot - just log it and continue
+        console.log(
+          `No chips in pot, this might be normal for the current game state`
+        );
+
+        // Set pot to 0 explicitly to avoid undefined values
+        game.pot = 0;
       }
     }
 
     // Store the original pot amount for logging
     const originalPot = game.pot;
+
+    // If pot is still 0, skip awarding chips but still update other state
+    if (game.pot <= 0) {
+      console.log("Pot is zero or negative, skipping chip distribution");
+
+      // Reset pot to 0 to be safe
+      game.pot = 0;
+
+      // Reset all player chips committed to pot
+      game.players.forEach((player) => {
+        player.chips = 0;
+      });
+
+      // Save the game document
+      await game.save();
+
+      // Return without modifying player balances
+      return {
+        winners,
+        originalPot: 0,
+      };
+    }
 
     // Split the pot evenly among winners
     const splitAmount = Math.floor(game.pot / winners.length);
@@ -1193,11 +1243,17 @@ const gameLogic = {
       }
 
       // Check if there are enough players to continue
-      if (game.players.filter((p) => p.isActive).length < 2) {
+      const activePlayers = game.players.filter(
+        (p) => p.isActive && p.totalChips > 0
+      );
+
+      if (activePlayers.length < 2) {
+        // Mark game as completed if we don't have enough players with chips
         game.status = "completed";
         game.actionHistory.push({
           player: "System",
           action: "gameCompleted",
+          message: "Chip e entek", // Updated message
           timestamp: Date.now(),
         });
       } else {
@@ -1245,23 +1301,6 @@ const gameLogic = {
           `Game status set to ${updatedGame.status} - waiting for players to ready up`
         );
 
-        // Log deck stats for debugging
-        if (updatedGame.deck) {
-          const suitCounts = {};
-          const rankCounts = {};
-
-          updatedGame.deck.forEach((card) => {
-            suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
-            rankCounts[card.rank] = (rankCounts[card.rank] || 0) + 1;
-          });
-
-          console.log("Deck statistics:", {
-            deckSize: updatedGame.deck.length,
-            suits: suitCounts,
-            ranks: rankCounts,
-          });
-        }
-
         return updatedGame;
       } catch (updateError) {
         console.error("Error updating game for next hand:", updateError);
@@ -1278,7 +1317,7 @@ const gameLogic = {
         freshGame.currentBet = 0;
         freshGame.communityCards = [];
         freshGame.players = game.players;
-        freshGame.status = "waiting"; // Set status to waiting
+        freshGame.status = game.status; // This should be 'waiting' or 'completed'
         freshGame.deck = cardDeck.createDeck(); // Create a fresh deck here too
 
         // Reset ready status in the fresh copy
@@ -1291,6 +1330,7 @@ const gameLogic = {
           freshGame.actionHistory.push({
             player: "System",
             action: "gameCompleted",
+            message: "Chip e entek", // Updated message
             timestamp: Date.now(),
           });
         } else {
@@ -1313,6 +1353,96 @@ const gameLogic = {
       console.error("Error in prepareNextHand:", error);
       throw error;
     }
+  },
+
+  /**
+   * Check for and remove players with insufficient chips
+   * @param {Object} game - Game document
+   * @param {Object} socketIo - Socket.io instance (optional)
+   * @param {String} gameId - Game ID (optional)
+   * @returns {Array} Array of removed players
+   */
+  checkAndRemoveBankruptPlayers: async function (
+    game,
+    socketIo = null,
+    gameId = null
+  ) {
+    let playersRemoved = false;
+    const removedPlayers = []; // Track removed players to emit events
+
+    // Check each player for having less than 1 chip
+    for (let i = game.players.length - 1; i >= 0; i--) {
+      const player = game.players[i];
+
+      if (player.isActive && player.totalChips < 1) {
+        console.log(
+          `Player ${player.username} has insufficient chips (${player.totalChips}), removing from game`
+        );
+
+        // Mark player as inactive
+        player.isActive = false;
+
+        // Add to game history
+        game.actionHistory.push({
+          player: player.username,
+          action: "playerRemoved",
+          message: "Insufficient chips to continue",
+          timestamp: Date.now(),
+        });
+
+        // Add to list of removed players
+        removedPlayers.push({
+          userId: player.user.toString(),
+          username: player.username,
+        });
+
+        playersRemoved = true;
+      }
+    }
+
+    // Count active players with chips
+    const activePlayers = game.players.filter(
+      (p) => p.isActive && p.totalChips > 0
+    );
+
+    // If there aren't enough players to continue, mark game as completed
+    if (activePlayers.length < 2) {
+      // Mark game as completed
+      game.status = "completed";
+
+      // Create a detailed message about why the game ended
+      const message = "Chip e entek";
+
+      // Add to game history
+      game.actionHistory.push({
+        player: "System",
+        action: "gameCompleted",
+        message: message,
+        timestamp: Date.now(),
+      });
+
+      // If socketIo and gameId are provided, emit the event
+      if (socketIo && gameId) {
+        // Emit a specific event for game ended with this message
+        socketIo.to(gameId).emit("gameEnded", {
+          message: message,
+          reason: "insufficientChips",
+          playersWithChips: activePlayers.map((p) => ({
+            id: p.user.toString(),
+            username: p.username,
+            chips: p.totalChips,
+          })),
+        });
+      }
+    }
+
+    if (playersRemoved) {
+      // Save the updated game
+      await game.save();
+    }
+
+    // Return the list of removed players
+    return removedPlayers;
   },
 
   // Get player by ID

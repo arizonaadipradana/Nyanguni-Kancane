@@ -133,6 +133,18 @@ app.use(express.static(path.join(__dirname, "public")));
 // Serve static files from public directory (for other static assets)
 app.use(express.static(path.join(__dirname, "public")));
 
+// Update the default route to include more diagnostic information
+app.get("/api", (req, res) => {
+  res.json({
+    message: "Nyanguni Kancane API is running",
+    version: "1.0.0",
+    environment: process.env.NODE_ENV || "development",
+    clientOrigin: req.headers.origin || "Unknown",
+    allowedOrigins: ["http://localhost:8080", "http://127.0.0.1:8080"],
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Handle all other routes - important for Vue Router's history mode
 // This should be placed AFTER all API routes
 app.get("*", (req, res) => {
@@ -152,18 +164,6 @@ app.get("/api/test", (req, res) => {
   res.json({
     message: "API test endpoint working",
     clientOrigin: req.headers.origin || "Unknown",
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// Update the default route to include more diagnostic information
-app.get("/api", (req, res) => {
-  res.json({
-    message: "Nyanguni Kancane API is running",
-    version: "1.0.0",
-    environment: process.env.NODE_ENV || "development",
-    clientOrigin: req.headers.origin || "Unknown",
-    allowedOrigins: ["http://localhost:8080", "http://127.0.0.1:8080"],
     timestamp: new Date().toISOString(),
   });
 });

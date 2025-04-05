@@ -133,6 +133,8 @@ export default {
       isFoldWin: false,
       currentHandTimestamp: 0,
       cardRefreshCounter: 0,
+      isObserver: false,
+      observerMessage: '',
     };
   },
 
@@ -197,7 +199,10 @@ export default {
       }
 
       return false;
-    }
+    },
+    canJoinGame() {
+      return this.isObserver && this.currentGame && this.currentGame.status === 'waiting';
+    },
   },
 
   methods: {
@@ -431,7 +436,7 @@ export default {
       this.endTurn();
 
       // Validate and sanitize amount for relevant actions
-      if (action === 'bet' || action === 'raise' || action === 'call') {
+      if (action === 'bet' || action === 'raise' || action === 'call' || action === 'allIn') {
         // Ensure amount is a valid number
         amount = parseFloat(amount);
         if (isNaN(amount)) {
@@ -441,6 +446,10 @@ export default {
             const currentBet = this.currentGame.currentBet || 0;
             const playerChips = this.getPlayerChipsInPot();
             amount = Math.max(0, currentBet - playerChips);
+          } else if (action === 'allIn') {
+            // For all-in, use all player's remaining chips
+            const player = this.getCurrentPlayer();
+            amount = player ? player.totalChips : 0;
           } else {
             amount = 1; // Default minimum bet/raise
           }
@@ -467,10 +476,7 @@ export default {
       } else if (action === 'call' && amount > 0) {
         logMessage += ` ${amount} chips`;
       } else if (action === 'allIn') {
-        const player = this.getCurrentPlayer();
-        if (player) {
-          logMessage += ` ${player.totalChips} chips`;
-        }
+        logMessage += ` with ${amount} chips`;
       }
 
       this.addToLog(logMessage);
@@ -1076,6 +1082,40 @@ export default {
 
       // Update the game state in store
       this.updateGameState(gameState);
+    },
+    handleObserverStatus(data) {
+      this.isObserver = data.isObserver;
+      this.observerMessage = data.message;
+
+      if (data.isObserver) {
+        this.addToLog('You are in observer mode. You can join when the current hand completes.');
+      }
+    },
+    /**
+  * Handle player removal notification due to insufficient chips
+  * @param {Object} data - Player removal data
+  */
+    handlePlayerRemoved(data) {
+      // Add to game log
+      this.addToLog(`${data.username} has been removed from the game due to insufficient chips`);
+
+      // If it's the current user
+      if (this.currentUser && data.userId === this.currentUser.id) {
+        // Show a notification to the user
+        this.SET_ERROR_MESSAGE("You've been removed from the game due to insufficient chips");
+
+        // Set observer mode
+        this.isObserver = true;
+        this.observerMessage = "You don't have enough chips to continue playing. You are now in observer mode.";
+
+        // If it was the user's turn, end it
+        if (this.isYourTurn) {
+          this.endTurn();
+        }
+      }
+
+      // Request updated game state
+      this.requestStateUpdate();
     }
   },
 
@@ -1205,6 +1245,13 @@ export default {
     };
     SocketService.on('gameUpdate', gameUpdateHandler);
     this.eventHandlers.push({ event: 'gameUpdate', handler: gameUpdateHandler });
+
+    SocketService.on('observerStatus', this.handleObserverStatus);
+    this.eventHandlers.push({ event: 'observerStatus', handler: this.handleObserverStatus });
+
+    //handler for player removed event
+    SocketService.on('playerRemoved', this.handlePlayerRemoved);
+    this.eventHandlers.push({ event: 'playerRemoved', handler: this.handlePlayerRemoved });
 
     // Handle status changes
     const gameStatusChangeHandler = (statusData) => {

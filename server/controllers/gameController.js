@@ -1,42 +1,47 @@
 // server/controllers/gameController.js
-const crypto = require('crypto');
-const Game = require('../models/Game');
-const User = require('../models/User');
-const gameLogic = require('../utils/gameLogic');
+const crypto = require("crypto");
+const Game = require("../models/Game");
+const User = require("../models/User");
+const gameLogic = require("../utils/gameLogic");
 
 // Generate a random 6-character game ID
 const generateGameId = () => {
-  return crypto.randomBytes(3).toString('hex');
+  return crypto.randomBytes(3).toString("hex");
 };
 
 // Create a new game
 exports.createGame = async (req, res) => {
   try {
-    console.log('Create game request received:', req.body);
-    
+    console.log("Create game request received:", req.body);
+
     const { creatorId, creatorName } = req.body;
-    
+
     // Validate required input
     if (!creatorId || !creatorName) {
-      console.log('Create game error: Missing required fields', { creatorId, creatorName });
-      return res.status(400).json({ msg: 'Creator ID and name are required' });
+      console.log("Create game error: Missing required fields", {
+        creatorId,
+        creatorName,
+      });
+      return res.status(400).json({ msg: "Creator ID and name are required" });
     }
 
     // Ensure the creator ID matches the authenticated user
     if (creatorId !== req.user.id) {
-      console.log('Create game error: Creator ID mismatch', { 
-        creatorId, 
+      console.log("Create game error: Creator ID mismatch", {
+        creatorId,
         userId: req.user.id,
-        requestUser: req.user
+        requestUser: req.user,
       });
-      return res.status(403).json({ msg: 'Creator ID does not match authenticated user' });
+      return res
+        .status(403)
+        .json({ msg: "Creator ID does not match authenticated user" });
     }
 
     // Find the creator user - do this first to fail early if user not found
     const user = await User.findById(creatorId);
     if (!user) {
-      console.log('Create game error: User not found', { creatorId });
-      return res.status(404).json({ msg: 'User not found' });
+      console.log("Create game error: User not found", { creatorId });
+      return res.status(404).json({ msg: "User not found" });
     }
 
     // Generate a unique game ID
@@ -44,10 +49,10 @@ exports.createGame = async (req, res) => {
     let isUnique = false;
     let attempts = 0;
     const maxAttempts = 5;
-    
+
     while (!isUnique && attempts < maxAttempts) {
       gameId = generateGameId();
-      
+
       // Check if game ID is already in use
       const existingGame = await Game.findOne({ gameId }).lean();
       if (!existingGame) {
@@ -55,10 +60,10 @@ exports.createGame = async (req, res) => {
       }
       attempts++;
     }
-    
+
     if (!isUnique) {
-      console.log('Create game error: Failed to generate unique game ID');
-      return res.status(500).json({ msg: 'Failed to generate unique game ID' });
+      console.log("Create game error: Failed to generate unique game ID");
+      return res.status(500).json({ msg: "Failed to generate unique game ID" });
     }
 
     // Create new game document
@@ -66,47 +71,49 @@ exports.createGame = async (req, res) => {
       gameId,
       creator: {
         user: creatorId,
-        username: creatorName
-      },
-      players: [{
-        user: creatorId,
         username: creatorName,
-        position: 0,
-        chips: 0,
-        totalChips: Math.min(user.balance, 1000),
-        hand: [],
-        isActive: true,
-        hasFolded: false,
-        hasActed: false,
-        isAllIn: false
-      }],
-      status: 'waiting',
+      },
+      players: [
+        {
+          user: creatorId,
+          username: creatorName,
+          position: 0,
+          chips: 0,
+          totalChips: Math.min(user.balance, 1000),
+          hand: [],
+          isActive: true,
+          hasFolded: false,
+          hasActed: false,
+          isAllIn: false,
+        },
+      ],
+      status: "waiting",
       pot: 0,
       // Initialize with a fresh, properly shuffled deck
-      deck: require('../utils/cardDeck').createDeck(),
+      deck: require("../utils/cardDeck").createDeck(),
       communityCards: [],
       dealerPosition: 0,
       smallBlindPosition: 0,
       bigBlindPosition: 1,
       currentBet: 0,
       minBet: 1, // 1 chip = 500 rupiah
-      bettingRound: 'preflop',
+      bettingRound: "preflop",
       handNumber: 0,
       actionHistory: [],
-      handResults: []
+      handResults: [],
     });
 
     // Save the game
-    console.log('Saving new game:', { gameId, creatorId, creatorName });
+    console.log("Saving new game:", { gameId, creatorId, creatorName });
     await newGame.save();
 
     // Return the game ID
-    console.log('Game created successfully:', gameId);
+    console.log("Game created successfully:", gameId);
     res.json({ gameId });
   } catch (err) {
-    console.error('Create game error:', err);
+    console.error("Create game error:", err);
     console.error(err.stack);
-    res.status(500).json({ msg: 'Server error', error: err.message });
+    res.status(500).json({ msg: "Server error", error: err.message });
   }
 };
 
@@ -114,19 +121,19 @@ exports.createGame = async (req, res) => {
 exports.getGame = async (req, res) => {
   try {
     const gameId = req.params.id;
-    
+
     // Find the game with better projection to fetch only necessary fields
     const game = await Game.findOne({ gameId });
     if (!game) {
-      return res.status(404).json({ msg: 'Game not found' });
+      return res.status(404).json({ msg: "Game not found" });
     }
 
     // Return a sanitized version of the game (without cards)
     const sanitizedGame = gameLogic.getSanitizedGameState(game);
     res.json(sanitizedGame);
   } catch (err) {
-    console.error('Get game error:', err.message);
-    res.status(500).json({ msg: 'Server error', error: err.message });
+    console.error("Get game error:", err.message);
+    res.status(500).json({ msg: "Server error", error: err.message });
   }
 };
 
@@ -138,37 +145,46 @@ exports.joinGame = async (req, res) => {
 
     // Ensure the player ID matches the authenticated user
     if (playerId !== req.user.id) {
-      return res.status(403).json({ msg: 'Player ID does not match authenticated user' });
+      return res
+        .status(403)
+        .json({ msg: "Player ID does not match authenticated user" });
     }
 
     // Find the game - with better projection to fetch only necessary fields
     const game = await Game.findOne(
       { gameId },
-      'gameId status players creator'
+      "gameId status players creator"
     );
-    
+
     if (!game) {
-      return res.status(404).json({ msg: 'Game not found' });
+      return res.status(404).json({ msg: "Game not found" });
     }
 
     // Quick validation checks
-    if (game.status !== 'waiting') {
-      return res.status(400).json({ msg: 'Game already started' });
+    if (game.status !== "waiting") {
+      return res.status(400).json({ msg: "Game already started" });
     }
 
-    if (game.players.some(player => player.user.toString() === playerId)) {
+    if (game.players.some((player) => player.user.toString() === playerId)) {
       // Player already joined - return success instead of error to avoid issues
       return res.json({ success: true, alreadyJoined: true });
     }
 
     if (game.players.length >= 8) {
-      return res.status(400).json({ msg: 'Game is full' });
+      return res.status(400).json({ msg: "Game is full" });
     }
 
     // Find the user with minimal projection
-    const user = await User.findById(playerId, 'balance');
+    const user = await User.findById(playerId, "balance");
     if (!user) {
-      return res.status(404).json({ msg: 'User not found' });
+      return res.status(404).json({ msg: "User not found" });
+    }
+
+    // Check if player has enough chips to join game (at least 1)
+    if (user.balance < 1) {
+      return res.status(400).json({
+        msg: "Insufficient chips to join game. Minimum 1 chip required.",
+      });
     }
 
     // Add player to the game
@@ -182,7 +198,7 @@ exports.joinGame = async (req, res) => {
       isActive: true,
       hasFolded: false,
       hasActed: false,
-      isAllIn: false
+      isAllIn: false,
     });
 
     // Save the updated game
@@ -190,8 +206,8 @@ exports.joinGame = async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Join game error:', err.message);
-    res.status(500).json({ msg: 'Server error', error: err.message });
+    console.error("Join game error:", err.message);
+    res.status(500).json({ msg: "Server error", error: err.message });
   }
 };
 
@@ -203,82 +219,95 @@ exports.startGame = async (req, res) => {
 
     // Ensure the player ID matches the authenticated user
     if (playerId !== req.user.id) {
-      return res.status(403).json({ msg: 'Player ID does not match authenticated user' });
+      return res
+        .status(403)
+        .json({ msg: "Player ID does not match authenticated user" });
     }
 
     // Find the game
     const game = await Game.findOne({ gameId });
     if (!game) {
-      return res.status(404).json({ msg: 'Game not found' });
+      return res.status(404).json({ msg: "Game not found" });
     }
 
     // Check if player is the creator
     if (game.creator.user.toString() !== playerId) {
-      return res.status(403).json({ msg: 'Only the creator can start the game' });
+      return res
+        .status(403)
+        .json({ msg: "Only the creator can start the game" });
     }
 
     // Check if enough players (at least 2)
     if (game.players.length < 2) {
-      return res.status(400).json({ msg: 'Need at least 2 players to start' });
+      return res.status(400).json({ msg: "Need at least 2 players to start" });
     }
 
     // Check if game has already started
-    if (game.status !== 'waiting') {
-      return res.status(400).json({ msg: 'Game has already been started' });
+    if (game.status !== "waiting") {
+      return res.status(400).json({ msg: "Game has already been started" });
     }
 
     // Ensure a fresh deck is created for the game
-    game.deck = require('../utils/cardDeck').createDeck();
-    console.log(`Game ${gameId} initialized with a fresh deck of ${game.deck.length} cards`);
+    game.deck = require("../utils/cardDeck").createDeck();
+    console.log(
+      `Game ${gameId} initialized with a fresh deck of ${game.deck.length} cards`
+    );
 
     // Import debugging utilities for error cases
-    const debugging = require('../utils/debugging');
+    const debugging = require("../utils/debugging");
 
     // Add error handler for any card-related issues
     try {
       // Update game status
-      game.status = 'active';
-      game.bettingRound = 'preflop';
+      game.status = "active";
+      game.bettingRound = "preflop";
       game.dealerPosition = 0; // First player is dealer for first hand
-      
+
       // Save the updated game
       await game.save();
     } catch (error) {
-      if (error.message && error.message.includes('Duplicate card detected')) {
-        console.error('Duplicate card issue detected at game start:', error.message);
+      if (error.message && error.message.includes("Duplicate card detected")) {
+        console.error(
+          "Duplicate card issue detected at game start:",
+          error.message
+        );
         // Try to fix the duplicate cards issue
         try {
           const fixResult = await debugging.fixDuplicateCards(game);
-          console.log('Fixed card duplication issue:', fixResult);
-          
+          console.log("Fixed card duplication issue:", fixResult);
+
           // Try saving again after fixing
-          game.status = 'active';
-          game.bettingRound = 'preflop';
+          game.status = "active";
+          game.bettingRound = "preflop";
           game._skipValidation = true; // Skip validation for this save
           await game.save();
         } catch (fixError) {
-          console.error('Failed to fix card issue:', fixError);
-          return res.status(500).json({ 
-            msg: 'Error starting game: card duplication issue', 
-            details: error.message 
+          console.error("Failed to fix card issue:", fixError);
+          return res.status(500).json({
+            msg: "Error starting game: card duplication issue",
+            details: error.message,
           });
         }
       } else {
-        console.error('Start game error:', error.message);
-        return res.status(500).send('Server error');
+        console.error("Start game error:", error.message);
+        return res.status(500).send("Server error");
       }
     }
 
     // Check for any remaining duplicate issues before returning
     const checkResult = debugging.checkGameForDuplicates(game);
     if (checkResult.hasDuplicates) {
-      console.warn(`Some duplicate cards still remain after fixing: ${JSON.stringify(checkResult.duplicates)}`);
+      console.warn(
+        `Some duplicate cards still remain after fixing: ${JSON.stringify(
+          checkResult.duplicates
+        )}`
+      );
     }
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Start game error:', err.message);
-    res.status(500).send('Server error');
+    console.error("Start game error:", err.message);
+    res.status(500).send("Server error");
   }
 };
 
@@ -286,23 +315,23 @@ exports.startGame = async (req, res) => {
 exports.getActiveGames = async (req, res) => {
   try {
     // Find all active games
-    const games = await Game.find({ status: { $in: ['waiting', 'active'] } })
-      .select('gameId creator players status createdAt')
+    const games = await Game.find({ status: { $in: ["waiting", "active"] } })
+      .select("gameId creator players status createdAt")
       .sort({ createdAt: -1 });
-      
+
     // Return a sanitized list
-    const sanitizedGames = games.map(game => ({
+    const sanitizedGames = games.map((game) => ({
       id: game.gameId,
       creator: game.creator.username,
       playerCount: game.players.length,
       status: game.status,
-      createdAt: game.createdAt
+      createdAt: game.createdAt,
     }));
-      
+
     res.json(sanitizedGames);
   } catch (err) {
-    console.error('Get active games error:', err.message);
-    res.status(500).send('Server error');
+    console.error("Get active games error:", err.message);
+    res.status(500).send("Server error");
   }
 };
 
@@ -310,16 +339,17 @@ exports.getActiveGames = async (req, res) => {
 exports.getUserGames = async (req, res) => {
   try {
     // Find games where user is a player
-    const games = await Game.find({ 
-      'players.user': req.user.id 
-    })
-    .select('gameId creator players status createdAt updatedAt');
-    
+    const games = await Game.find({
+      "players.user": req.user.id,
+    }).select("gameId creator players status createdAt updatedAt");
+
     // Return sanitized list
-    const sanitizedGames = games.map(game => {
+    const sanitizedGames = games.map((game) => {
       // Find the user's player object in this game
-      const player = game.players.find(p => p.user.toString() === req.user.id);
-      
+      const player = game.players.find(
+        (p) => p.user.toString() === req.user.id
+      );
+
       return {
         id: game.gameId,
         creator: game.creator.username,
@@ -328,14 +358,14 @@ exports.getUserGames = async (req, res) => {
         createdAt: game.createdAt,
         updatedAt: game.updatedAt,
         yourChips: player ? player.totalChips : 0,
-        isCreator: game.creator.user.toString() === req.user.id
+        isCreator: game.creator.user.toString() === req.user.id,
       };
     });
-    
+
     res.json(sanitizedGames);
   } catch (err) {
-    console.error('Get user games error:', err.message);
-    res.status(500).send('Server error');
+    console.error("Get user games error:", err.message);
+    res.status(500).send("Server error");
   }
 };
 
@@ -343,42 +373,45 @@ exports.getUserGames = async (req, res) => {
 exports.endGame = async (req, res) => {
   try {
     const gameId = req.params.id;
-    
+
     // Find the game
     const game = await Game.findOne({ gameId });
     if (!game) {
-      return res.status(404).json({ msg: 'Game not found' });
+      return res.status(404).json({ msg: "Game not found" });
     }
-    
+
     // Check if player is the creator
     if (game.creator.user.toString() !== req.user.id) {
-      return res.status(403).json({ msg: 'Only the creator can end the game' });
+      return res.status(403).json({ msg: "Only the creator can end the game" });
     }
-    
+
     // Update game status
-    game.status = 'completed';
-    
+    game.status = "completed";
+
     // Update player balances based on current chips
     for (const player of game.players) {
       // Skip inactive players
       if (!player.isActive) continue;
-      
+
       try {
         await User.findByIdAndUpdate(player.user, {
-          $inc: { balance: player.totalChips }
+          $inc: { balance: player.totalChips },
         });
       } catch (error) {
-        console.error(`Error updating balance for player ${player.username}:`, error);
+        console.error(
+          `Error updating balance for player ${player.username}:`,
+          error
+        );
       }
     }
-    
+
     // Save the updated game
     await game.save();
-    
+
     res.json({ success: true });
   } catch (err) {
-    console.error('End game error:', err.message);
-    res.status(500).send('Server error');
+    console.error("End game error:", err.message);
+    res.status(500).send("Server error");
   }
 };
 
@@ -386,35 +419,37 @@ exports.endGame = async (req, res) => {
 exports.getGameResults = async (req, res) => {
   try {
     const gameId = req.params.id;
-    
+
     // Find the game
     const game = await Game.findOne({ gameId });
     if (!game) {
-      return res.status(404).json({ msg: 'Game not found' });
+      return res.status(404).json({ msg: "Game not found" });
     }
-    
+
     // Check if player is in the game
-    const isPlayerInGame = game.players.some(p => p.user.toString() === req.user.id);
+    const isPlayerInGame = game.players.some(
+      (p) => p.user.toString() === req.user.id
+    );
     if (!isPlayerInGame) {
-      return res.status(403).json({ msg: 'You are not a player in this game' });
+      return res.status(403).json({ msg: "You are not a player in this game" });
     }
-    
+
     // Return game results
     const results = {
       gameId: game.gameId,
       status: game.status,
       handResults: game.handResults,
-      players: game.players.map(player => ({
+      players: game.players.map((player) => ({
         id: player.user,
         username: player.username,
         finalChips: player.totalChips,
-        isActive: player.isActive
-      }))
+        isActive: player.isActive,
+      })),
     };
-    
+
     res.json(results);
   } catch (err) {
-    console.error('Get game results error:', err.message);
-    res.status(500).send('Server error');
+    console.error("Get game results error:", err.message);
+    res.status(500).send("Server error");
   }
 };
