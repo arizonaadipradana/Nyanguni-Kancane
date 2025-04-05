@@ -1,108 +1,50 @@
 // server/utils/ngrok-setup.js
-const ngrok = require('ngrok');
-const fs = require('fs');
-const path = require('path');
+const ngrok = require("ngrok");
 
-/**
- * Initialize ngrok tunnel with better error handling and configuration
- * @param {number} port - The port to expose
- * @param {Object} options - Additional options
- * @returns {Promise<string>} - The public URL
- */
-async function setupNgrok(port, options = {}) {
+// Setup ngrok tunnel
+async function setupNgrok(port) {
   try {
-    // Default options
-    const ngrokOptions = {
+    console.log(`Setting up ngrok tunnel to port ${port}...`);
+
+    // Set authtoken if provided in environment
+    const authtoken = process.env.NGROK_AUTHTOKEN;
+
+    const url = await ngrok.connect({
+      proto: "http",
       addr: port,
-      region: 'us', // Default region
-      ...options
-    };
+      authtoken,
+      region: "us",
+      onStatusChange: (status) => {
+        console.log(`Ngrok Status: ${status}`);
+      },
+      onLogEvent: (logEvent) => {
+        if (process.env.DEBUG) {
+          console.log(`Ngrok Log: ${logEvent}`);
+        }
+      },
+    });
 
-    // Add authtoken if available
-    if (process.env.NGROK_AUTHTOKEN) {
-      console.log('Using ngrok with auth token');
-      ngrokOptions.authtoken = process.env.NGROK_AUTHTOKEN;
-    } else {
-      console.log('Running ngrok without auth token (limited to 1 session and 2 hours)');
-    }
-
-    // Set up basic auth if credentials provided
-    if (process.env.NGROK_USERNAME && process.env.NGROK_PASSWORD) {
-      ngrokOptions.auth = `${process.env.NGROK_USERNAME}:${process.env.NGROK_PASSWORD}`;
-      console.log('ngrok basic authentication enabled');
-    }
-
-    // Start ngrok with improved error handling
-    console.log('Starting ngrok tunnel...');
-    const url = await ngrok.connect(ngrokOptions);
-    
-    // Success
-    console.log(`
-    ================================================
-      NGROK TUNNEL ACTIVE
-    ------------------------------------------------
-      ✅ Public URL: ${url}
-      ✅ Local port: ${port}
-    ================================================
-    `);
-
-    // Save URL to a file for reference and for the client
-    const infoPath = path.join(__dirname, '..', 'ngrok-info.json');
-    fs.writeFileSync(infoPath, JSON.stringify({
-      url,
-      started: new Date().toISOString()
-    }, null, 2));
-
-    // Store URL globally for other parts of the application to use
+    console.log(`⭐ Ngrok tunnel established at: ${url}`);
     global.ngrokUrl = url;
-    
-    // Create a config endpoint file that the client can fetch
-    const configPath = path.join(__dirname, '..', 'public', 'config.json');
-    const configData = {
-      apiUrl: url,
-      socketUrl: url,
-      env: process.env.NODE_ENV || 'development',
-      version: '1.0.0',
-      timestamp: new Date().toISOString()
-    };
-    
-    // Ensure the public directory exists
-    const publicDir = path.join(__dirname, '..', 'public');
-    if (!fs.existsSync(publicDir)) {
-      fs.mkdirSync(publicDir, { recursive: true });
-    }
-    
-    fs.writeFileSync(configPath, JSON.stringify(configData, null, 2));
-    console.log('Configuration written to public/config.json for client access');
-    
+
     return url;
   } catch (error) {
-    console.error('Failed to start ngrok tunnel:', error);
+    console.error("Error setting up ngrok tunnel:", error);
     throw error;
   }
 }
 
-/**
- * Close the ngrok tunnel
- */
+// Clean up function to close ngrok when server shuts down
 async function closeNgrok() {
   try {
     await ngrok.kill();
-    console.log('Ngrok tunnel closed');
-    global.ngrokUrl = null;
+    console.log("Ngrok tunnel closed");
   } catch (error) {
-    console.error('Error closing ngrok tunnel:', error);
+    console.error("Error closing ngrok tunnel:", error);
   }
 }
 
-// Register graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('Shutting down ngrok tunnel...');
-  await closeNgrok();
-  process.exit(0);
-});
-
 module.exports = {
   setupNgrok,
-  closeNgrok
+  closeNgrok,
 };

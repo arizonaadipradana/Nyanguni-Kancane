@@ -1,16 +1,16 @@
 // server/server.js
 // Replace your ENTIRE server.js file with this content
-const fs = require('fs');
-const express = require('express');
-const http = require('http');
-const socketIO = require('socket.io');
-const cors = require('cors');
-const config = require('config');
-const dotenv = require('dotenv');
-const path = require('path');
-const mongoose = require('mongoose');
-const errorHandler = require('./middleware/error');
-const connectDB = require('./utils/db');
+const fs = require("fs");
+const express = require("express");
+const http = require("http");
+const socketIO = require("socket.io");
+const cors = require("cors");
+const config = require("config");
+const dotenv = require("dotenv");
+const path = require("path");
+const mongoose = require("mongoose");
+const errorHandler = require("./middleware/error");
+const connectDB = require("./utils/db");
 
 // Load environment variables
 dotenv.config();
@@ -24,69 +24,82 @@ const server = http.createServer(app);
 
 // CORS middleware - simplified version
 // CORS middleware - improved with dynamic origin detection
-app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc)
-    if (!origin) return callback(null, true);
-    
-    // Allow all localhost and local network origins
-    if (
-      origin.startsWith('http://localhost') || 
-      origin.startsWith('http://127.0.0.1') ||
-      origin.startsWith('http://192.168.') ||
-      origin.startsWith('http://10.') ||
-      origin.includes('ngrok-free.app')
-    ) {
-      return callback(null, true);
-    }
-    
-    // For production
-    if (process.env.NODE_ENV === 'production') {
-      // Extract hostname from origin
-      try {
-        const hostname = new URL(origin).hostname;
-        
-        // Check if origin matches our allowed domains
-        if (hostname === 'yourdomain.com' || hostname.endsWith('.yourdomain.com')) {
-          return callback(null, true);
-        }
-      } catch (e) {
-        console.error('Error parsing origin URL:', e);
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps, curl, etc)
+      if (!origin) return callback(null, true);
+
+      // Allow all localhost and local network origins
+      if (
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("http://127.0.0.1") ||
+        origin.startsWith("http://192.168.") ||
+        origin.startsWith("http://10.") ||
+        origin.includes("ngrok-free.app")
+      ) {
+        return callback(null, true);
       }
-    }
-    
-    console.log(`CORS blocked request from origin: ${origin}`);
-    callback(new Error('Not allowed by CORS'));
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With'],
-  exposedHeaders: ['Content-Length', 'X-Auth-Token'],
-  maxAge: 86400 // 24 hours caching for preflight requests
-}));
 
+      // For production
+      if (process.env.NODE_ENV === "production") {
+        // Extract hostname from origin
+        try {
+          const hostname = new URL(origin).hostname;
 
-app.options('*', cors());
+          // Check if origin matches our allowed domains
+          if (
+            hostname === "yourdomain.com" ||
+            hostname.endsWith(".yourdomain.com")
+          ) {
+            return callback(null, true);
+          }
+        } catch (e) {
+          console.error("Error parsing origin URL:", e);
+        }
+      }
+
+      console.log(`CORS blocked request from origin: ${origin}`);
+      callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-auth-token",
+      "Cache-Control",
+      "X-Requested-With",
+    ],
+    exposedHeaders: ["Content-Length", "X-Auth-Token"],
+    maxAge: 86400, // 24 hours caching for preflight requests
+  })
+);
+
+app.options("*", cors());
 
 // Body parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 // API routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/games', require('./routes/games'));
-app.use('/api/config', require('./routes/config'));
+app.use("/api/auth", require("./routes/auth"));
+app.use("/api/games", require("./routes/games"));
+app.use("/api/config", require("./routes/config"));
 
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin); // Dynamic based on request
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  
-  if (req.method === 'OPTIONS') {
+  res.header("Access-Control-Allow-Origin", req.headers.origin); // Dynamic based on request
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, x-auth-token"
+  );
+  res.header("Access-Control-Allow-Credentials", "true");
+
+  if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
-  
+
   next();
 });
 
@@ -96,59 +109,73 @@ const io = socketIO(server, {
     origin: true, // Match Express CORS settings
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Cache-Control', 'X-Requested-With']
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-auth-token",
+      "Cache-Control",
+      "X-Requested-With",
+    ],
   },
-  transports: ['websocket', 'polling'],
+  transports: ["websocket", "polling"],
   pingTimeout: 10000, // Increase timeout for better connection stability
-  pingInterval: 5000
+  pingInterval: 5000,
 });
 
 // Initialize sockets
-const initializeSocket = require('./sockets');
+const initializeSocket = require("./sockets");
 initializeSocket(io);
 
 // Serve static assets in production
-if (process.env.NODE_ENV === 'production') {
-  // Set static folder
-  app.use(express.static(path.join(__dirname, '../client/dist')));
+// Serve static files from client/dist directory (Vue build)
+app.use(express.static(path.join(__dirname, "public")));
 
-  // Any route that is not an API route will be served the index.html file
-  app.get('*', (req, res) => {
-    res.sendFile(path.resolve(__dirname, '../client/dist', 'index.html'));
-  });
-}
+// Serve static files from public directory (for other static assets)
+app.use(express.static(path.join(__dirname, "public")));
+
+// Handle all other routes - important for Vue Router's history mode
+// This should be placed AFTER all API routes
+app.get("*", (req, res) => {
+  // Check if request is for an API route
+  if (req.url.startsWith("/api")) {
+    return res.status(404).json({ message: "API endpoint not found" });
+  }
+
+  // For all other routes, serve the Vue app
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
 // Serve static files from public directory
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, "public")));
 
-app.get('/api/test', (req, res) => {
-  res.json({ 
-    message: 'API test endpoint working',
-    clientOrigin: req.headers.origin || 'Unknown',
-    timestamp: new Date().toISOString()
+app.get("/api/test", (req, res) => {
+  res.json({
+    message: "API test endpoint working",
+    clientOrigin: req.headers.origin || "Unknown",
+    timestamp: new Date().toISOString(),
   });
 });
 
 // Update the default route to include more diagnostic information
-app.get('/api', (req, res) => {
-  res.json({ 
-    message: 'Nyanguni Kancane API is running',
-    version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development',
-    clientOrigin: req.headers.origin || 'Unknown',
-    allowedOrigins: ['http://localhost:8080', 'http://127.0.0.1:8080'],
-    timestamp: new Date().toISOString()
+app.get("/api", (req, res) => {
+  res.json({
+    message: "Nyanguni Kancane API is running",
+    version: "1.0.0",
+    environment: process.env.NODE_ENV || "development",
+    clientOrigin: req.headers.origin || "Unknown",
+    allowedOrigins: ["http://localhost:8080", "http://127.0.0.1:8080"],
+    timestamp: new Date().toISOString(),
   });
 });
 
-app.get('/', (req, res) => {
+app.get("/", (req, res) => {
   // Check if we have a client dist folder to serve
-  const clientDistPath = path.join(__dirname, '../client/dist');
-  const clientExists = fs.existsSync(path.join(clientDistPath, 'index.html'));
-  
-  if (process.env.NODE_ENV === 'production' && clientExists) {
+  const clientDistPath = path.join(__dirname, "../client/dist");
+  const clientExists = fs.existsSync(path.join(clientDistPath, "index.html"));
+
+  if (process.env.NODE_ENV === "production" && clientExists) {
     // In production, serve the built client app
-    res.sendFile(path.join(clientDistPath, 'index.html'));
+    res.sendFile(path.join(clientDistPath, "index.html"));
   } else {
     // In development or if client build not found, show a welcome message
     res.send(`
@@ -205,9 +232,15 @@ app.get('/', (req, res) => {
             
             <h2>Server Information</h2>
             <ul>
-              <li><strong>Environment:</strong> ${process.env.NODE_ENV || 'development'}</li>
-              <li><strong>Server URL:</strong> ${global.ngrokUrl || `http://localhost:${PORT}`}</li>
-              <li><strong>API Endpoint:</strong> <div class="api-url">${global.ngrokUrl || `http://localhost:${PORT}`}/api</div></li>
+              <li><strong>Environment:</strong> ${
+                process.env.NODE_ENV || "development"
+              }</li>
+              <li><strong>Server URL:</strong> ${
+                global.ngrokUrl || `http://localhost:${PORT}`
+              }</li>
+              <li><strong>API Endpoint:</strong> <div class="api-url">${
+                global.ngrokUrl || `http://localhost:${PORT}`
+              }/api</div></li>
             </ul>
             
             <p>To access the game, you need to connect to the client application.</p>
@@ -232,26 +265,29 @@ app.get('/', (req, res) => {
 app.use(errorHandler);
 
 // Server setup
-const PORT = process.env.PORT || config.get('port') || 5000;
+const PORT = process.env.PORT || config.get("port") || 5000;
 
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
-  
+
   // Display MongoDB connection status
   const dbStatus = mongoose.connection.readyState;
-  const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  const dbStates = ["disconnected", "connected", "connecting", "disconnecting"];
   console.log(`MongoDB Status: ${dbStates[dbStatus]}`);
-  
+
   // Start ngrok if enabled in development
-  if (process.env.NODE_ENV === 'development' && process.env.USE_NGROK === 'true') {
+  if (
+    process.env.NODE_ENV === "development" &&
+    process.env.USE_NGROK === "true"
+  ) {
     try {
       // Use the dedicated setup module for better organization
-      const { setupNgrok } = require('./utils/ngrok-setup');
+      const { setupNgrok } = require("./utils/ngrok-setup");
       const url = await setupNgrok(PORT);
-      
+
       // The ngrok URL is now stored in global.ngrokUrl
       // and can be accessed from other parts of the application
-      
+
       // Log additional server information
       console.log(`
       ===============================================
@@ -264,45 +300,45 @@ server.listen(PORT, async () => {
       ===============================================
       `);
     } catch (err) {
-      console.error('Error starting ngrok:', err);
-      console.log('Continuing without external access URL');
+      console.error("Error starting ngrok:", err);
+      console.log("Continuing without external access URL");
     }
   }
 });
 
 // Handle shutdown gracefully
-process.on('SIGINT', async () => {
-  console.log('SIGINT received. Shutting down gracefully...');
-  
+process.on("SIGINT", async () => {
+  console.log("SIGINT received. Shutting down gracefully...");
+
   try {
     // Close mongoose connection
     await mongoose.connection.close();
-    console.log('MongoDB connection closed');
-    
+    console.log("MongoDB connection closed");
+
     // Close server
     server.close(() => {
-      console.log('HTTP server closed');
+      console.log("HTTP server closed");
       process.exit(0);
     });
-    
+
     // Force exit after timeout
     setTimeout(() => {
-      console.error('Forcing shutdown after timeout');
+      console.error("Forcing shutdown after timeout");
       process.exit(1);
     }, 10000);
   } catch (err) {
-    console.error('Error during shutdown:', err);
+    console.error("Error during shutdown:", err);
     process.exit(1);
   }
 });
 
 // Handle uncaught exceptions and rejections
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
   process.exit(1);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
   process.exit(1);
 });
